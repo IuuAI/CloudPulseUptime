@@ -1,0 +1,6 @@
+{
+  "name": "CloudPulse-UPtime",
+  "description": "简洁自适应的跨平台 Uptime 站点与 Cloudflare 服务监控平台，支持明亮/暗黑/跟随系统主题及 AI SLA 分析。",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
