@@ -6,7 +6,6 @@
 import React, { useState, useEffect } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { Header } from './components/Header';
-import { Sidebar } from './components/Sidebar';
 import { OverviewCards } from './components/OverviewCards';
 import { MonitorList } from './components/MonitorList';
 import { MonitorDetailModal } from './components/MonitorDetailModal';
@@ -79,8 +78,7 @@ export function AppContent() {
   });
 
   // UI state
-  const [activeTab, setActiveTab] = useState<string>('overview');
-  const [isOpenMobileMenu, setIsOpenMobileMenu] = useState(false);
+  const [activeTab, setActiveTab] = useState<string>('monitors');
 
   // Modals state
   const [selectedMonitor, setSelectedMonitor] = useState<Monitor | null>(null);
@@ -348,137 +346,76 @@ export function AppContent() {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200">
-      {/* Header */}
+      {/* Header with integrated navigation */}
       <Header
         monitors={monitors}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        onOpenMobileMenu={() => setIsOpenMobileMenu(true)}
         onOpenAIReport={() => generateAISlaReport(null)}
         onAddMonitor={() => {
           setEditingMonitor(null);
           setShowFormModal(true);
         }}
+        incidentsCount={incidents.filter((i) => i.status !== 'resolved').length}
       />
 
-      {/* Main Layout */}
-      <div className="max-w-7xl mx-auto flex min-h-[calc(100vh-4rem)]">
-        {/* Sidebar */}
-        <Sidebar
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
-          isOpenMobile={isOpenMobileMenu}
-          onCloseMobile={() => setIsOpenMobileMenu(false)}
-          monitorsCount={monitors.length}
-          incidentsCount={incidents.filter((i) => i.status !== 'resolved').length}
-        />
+      {/* Main Content Area */}
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 min-w-0">
+        {/* MONITORS & OVERVIEW TAB */}
+        {activeTab === 'monitors' && (
+          <div className="space-y-5">
+            <OverviewCards monitors={monitors} incidents={incidents} />
 
-        {/* Main Content Area */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 min-w-0">
-          {/* OVERVIEW / DASHBOARD TAB */}
-          {activeTab === 'overview' && (
-            <div className="space-y-6">
-              <OverviewCards monitors={monitors} incidents={incidents} />
-
-              <div className="flex items-center justify-between">
-                <h2 className="text-sm font-bold uppercase tracking-wider text-slate-400 font-mono">
-                  所有监控站点与服务概览
-                </h2>
-                <span className="text-xs text-slate-500 font-mono">
-                  自动秒级 Edge 采样中
-                </span>
-              </div>
-
-              <MonitorList
-                monitors={monitors}
-                onSelectMonitor={(m) => setSelectedMonitor(m)}
-                onRunCheckNow={(id) => executeLiveCheck(id, true)}
-                onTogglePause={handleTogglePause}
-                onEditMonitor={(m) => {
-                  setEditingMonitor(m);
-                  setShowFormModal(true);
-                }}
-                onDeleteMonitor={handleDeleteMonitor}
-                checkingMonitorId={checkingMonitorId}
-              />
-            </div>
-          )}
-
-          {/* MONITORS MANAGEMENT TAB */}
-          {activeTab === 'monitors' && (
-            <div className="space-y-6">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h2 className="text-base font-bold text-slate-900 dark:text-white font-mono">
-                    站点与 API 监控项管理
-                  </h2>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">
-                    支持 HTTP/HTTPS, Cloudflare Worker, TCP Port, SSL 证书多重检测。
-                  </p>
-                </div>
-
-                <button
-                  onClick={() => {
-                    setEditingMonitor(null);
-                    setShowFormModal(true);
-                  }}
-                  className="px-4 py-2 rounded-xl bg-sky-600 hover:bg-sky-500 text-white font-semibold text-xs shadow-sm transition-all"
-                >
-                  + 新增监控项
-                </button>
-              </div>
-
-              <MonitorList
-                monitors={monitors}
-                onSelectMonitor={(m) => setSelectedMonitor(m)}
-                onRunCheckNow={(id) => executeLiveCheck(id, true)}
-                onTogglePause={handleTogglePause}
-                onEditMonitor={(m) => {
-                  setEditingMonitor(m);
-                  setShowFormModal(true);
-                }}
-                onDeleteMonitor={handleDeleteMonitor}
-                checkingMonitorId={checkingMonitorId}
-              />
-            </div>
-          )}
-
-          {/* CLOUDFLARE EDGE MAP TAB */}
-          {activeTab === 'edge_map' && (
-            <GlobalEdgeMap nodes={initialGlobalNodes} />
-          )}
-
-          {/* INCIDENTS MANAGER TAB */}
-          {activeTab === 'incidents' && (
-            <IncidentsManager
-              incidents={incidents}
-              onAddIncident={handleAddIncident}
-              onUpdateIncidentStatus={handleUpdateIncidentStatus}
-            />
-          )}
-
-          {/* PUBLIC STATUS PAGE TAB */}
-          {activeTab === 'status_page' && (
-            <StatusPageBuilder
-              config={statusPageConfig}
+            <MonitorList
               monitors={monitors}
-              onUpdateConfig={(newCfg) =>
-                setStatusPageConfig((prev) => ({ ...prev, ...newCfg }))
-              }
+              onSelectMonitor={(m) => setSelectedMonitor(m)}
+              onRunCheckNow={(id) => executeLiveCheck(id, true)}
+              onTogglePause={handleTogglePause}
+              onEditMonitor={(m) => {
+                setEditingMonitor(m);
+                setShowFormModal(true);
+              }}
+              onDeleteMonitor={handleDeleteMonitor}
+              checkingMonitorId={checkingMonitorId}
             />
-          )}
+          </div>
+        )}
 
-          {/* ALERTS & WEBHOOKS TAB */}
-          {activeTab === 'alerts' && (
-            <AlertSettings
-              webhooks={webhooks}
-              onAddWebhook={handleAddWebhook}
-              onToggleWebhook={handleToggleWebhook}
-              onDeleteWebhook={handleDeleteWebhook}
-            />
-          )}
-        </main>
-      </div>
+        {/* CLOUDFLARE EDGE MAP TAB */}
+        {activeTab === 'edge_map' && (
+          <GlobalEdgeMap nodes={initialGlobalNodes} />
+        )}
+
+        {/* INCIDENTS MANAGER TAB */}
+        {activeTab === 'incidents' && (
+          <IncidentsManager
+            incidents={incidents}
+            onAddIncident={handleAddIncident}
+            onUpdateIncidentStatus={handleUpdateIncidentStatus}
+          />
+        )}
+
+        {/* PUBLIC STATUS PAGE TAB */}
+        {activeTab === 'status_page' && (
+          <StatusPageBuilder
+            config={statusPageConfig}
+            monitors={monitors}
+            onUpdateConfig={(newCfg) =>
+              setStatusPageConfig((prev) => ({ ...prev, ...newCfg }))
+            }
+          />
+        )}
+
+        {/* ALERTS & WEBHOOKS TAB */}
+        {activeTab === 'alerts' && (
+          <AlertSettings
+            webhooks={webhooks}
+            onAddWebhook={handleAddWebhook}
+            onToggleWebhook={handleToggleWebhook}
+            onDeleteWebhook={handleDeleteWebhook}
+          />
+        )}
+      </main>
 
       {/* Detail Modal */}
       {selectedMonitor && (
