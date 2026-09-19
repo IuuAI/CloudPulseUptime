@@ -230,42 +230,115 @@ sudo certbot --nginx -d uptime.example.com
 
 ---
 
-### 方案三：Cloudflare Pages / Workers 边缘无服务器部署
+### 方案三：Cloudflare Pages / Workers 边缘无服务器全栈部署
 
-利用 Cloudflare 全球边缘网络，享受毫秒级冷启动与永久免费额度：
+CloudPulse 支持部署在 Cloudflare 全球 300+ Anycast 边缘数据中心，享受 **0 服务器成本**、**毫秒级冷启动** 与 **永久免费额度**（每天 100,000 次免费 Worker 请求、D1 每日 500 万次免费行读取）。
 
-#### 1. 前置准备与登录
+---
+
+#### 方式 A：Cloudflare Pages 控制台 Git 持续集成（最简单，推荐）
+
+适合希望通过 GitHub / GitLab 仓库自动触发构建部署的用户：
+
+1. **登录 Cloudflare Dashboard**：
+   - 访问 [Cloudflare 仪表盘](https://dash.cloudflare.com/) 并进入 **Workers & Pages** -> **Create application** -> **Pages** -> **Connect to Git**。
+2. **关联代码仓库并设置构建参数**：
+   - **项目名称 (Project Name)**: `cloudpulse-uptime`
+   - **生产分支 (Production Branch)**: `main`
+   - **框架预设 (Framework Preset)**: `Vite`
+   - **构建命令 (Build Command)**: `npm run build`
+   - **构建输出目录 (Build Output Directory)**: `dist`
+   - **Node.js 版本环境变量**: 在 **Environment Variables** 添加 `NODE_VERSION` = `20`
+   - **依赖安装参数 (如遇到 ERESOLVE 冲突)**: 项目根目录已提供 `.npmrc`（开启 `legacy-peer-deps=true`）。如在 Cloudflare 后台自定义了安装命令，请使用 `npm install --legacy-peer-deps`。
+3. **配置环境变量与密钥**：
+   - 在 **Settings** -> **Environment variables** 中添加生产环境变量：
+     - `GEMINI_API_KEY`: *(你的 Google Gemini API Key，可选)*
+     - `ADMIN_PASSWORD`: *(你的后台管理员密码，可选)*
+4. **绑定 D1 数据库与 KV 缓存（可选）**：
+   - 在 Pages 项目设置中找到 **Functions** -> **D1 database bindings**，添加 `DB` 绑定至你的 D1 实例。
+   - 找到 **KV namespace bindings**，添加 `CACHE_KV` 绑定至你的 KV 命名空间。
+5. **保存并部署**：
+   - 点击 **Save and Deploy**，完成后 Cloudflare 会为你分配一个 `*.pages.dev` 的全球高速 HTTPS 域名。
+
+---
+
+#### 方式 B：Wrangler CLI 命令行本地一键发布
+
+适合开发者在本地终端通过 Cloudflare 官方脚手架 CLI 快速发布：
+
+##### 1. 安装 Wrangler CLI 并登录
 
 ```bash
-# 安装依赖
+# 全局或本地安装 Wrangler
+npm install -g wrangler
+
+# 登录 Cloudflare 账户（浏览器将弹出授权确认窗口）
+wrangler login
+```
+
+##### 2. 创建 D1 数据库与 KV 命名空间（可选）
+
+```bash
+# 1. 创建 D1 数据库实例
+wrangler d1 create cloudpulse_uptime_db
+
+# 执行后终端会输出 database_id，例如：
+# database_id = "xxxx-xxxx-xxxx-xxxx"
+
+# 2. 创建用于高频热状态缓存的 KV 命名空间
+wrangler kv:namespace create "CACHE_KV"
+
+# 3. 初始化 D1 数据表结构（可选）
+wrangler d1 execute cloudpulse_uptime_db --command "CREATE TABLE IF NOT EXISTS check_logs (id TEXT PRIMARY KEY, monitor_id TEXT, latency_ms INTEGER, status_code INTEGER, created_at INTEGER);"
+```
+
+##### 3. 配置 `wrangler.toml`
+
+复制项目根目录下的配置文件模板：
+```bash
+cp wrangler.toml.example wrangler.toml
+```
+
+根据你的实际资源 ID 修改 `wrangler.toml` 中的 `database_id` 与 `kv_namespaces.id`。
+
+##### 4. 设置安全加密密钥 (Secrets)
+
+```bash
+# 安全写入 Gemini API 密钥
+wrangler secret put GEMINI_API_KEY
+
+# 安全写入后台管理员主密码
+wrangler secret put ADMIN_PASSWORD
+```
+
+##### 5. 编译并一键发布
+
+```bash
+# 1. 安装依赖并构建前端生产静态资源
 npm install
-
-# 登录 Cloudflare 账户
-npx wrangler login
-```
-
-#### 2. 创建 D1 数据库与 KV 命名空间
-
-```bash
-# 创建 D1 数据库
-npx wrangler d1 create cloudpulse_uptime_db
-
-# 创建用于状态缓存与热数据的 KV 命名空间
-npx wrangler kv:namespace create "CACHE_KV"
-```
-
-#### 3. 配置密钥并部署
-
-```bash
-# 设置 Gemini API 密钥
-npx wrangler secret put GEMINI_API_KEY
-
-# 构建前端产物
 npm run build
 
-# 部署至 Cloudflare
-npx wrangler deploy
+# 2. 发布 Pages 站点
+npx wrangler pages deploy dist --project-name=cloudpulse-uptime
+
+# 或者作为 Worker 边缘全栈发布：
+# npx wrangler deploy
 ```
+
+---
+
+#### 方式 C：Cloudflare Workers 定时巡检探针 (Cron Triggers)
+
+如果你的主控端部署在外部 VPS，但希望利用 Cloudflare 全球 300+ 边缘机房充当**分布式免费巡检探针**：
+
+1. **新建 Worker 巡检脚本**：
+   进入 **Workers & Pages** -> **Create Worker**，命名为 `cloudpulse-edge-probe`。
+2. **粘贴探针执行代码**：
+   进入 CloudPulse 前台的 **全球节点 (Global Edge POPs)** -> 点击任意节点旁边的 **探针代码** -> 选择 **Cloudflare Worker 脚本** 标签页并复制代码。
+3. **设置 Cron 定时触发器**：
+   在 Worker 的 **Settings** -> **Triggers** -> **Cron Triggers** 中添加定时规则：
+   - `* * * * *` （每 1 分钟自动触发一次全球边缘节点并发心跳回传）
+4. 点击 **Save and Deploy**，即可实现全天候无服务器的全球多节点分布式可用性探测！
 
 ---
 

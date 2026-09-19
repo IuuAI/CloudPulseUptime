@@ -1,0 +1,25 @@
+name = "cloudpulse-uptime"
+compatibility_date = "2024-04-01"
+compatibility_flags = ["nodejs_compat"]
+
+# 生产环境静态资产目录
+pages_build_output_dir = "dist"
+
+[vars]
+NODE_ENV = "production"
+APP_NAME = "CloudPulse-UPtime"
+
+# 绑定 Cloudflare D1 数据库（可选：用于持久化存储历史监测日志与节点数据）
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "cloudpulse_uptime_db"
+# database_id = "<your-d1-database-id>"
+
+# 绑定 Cloudflare KV（可选：用于全球分布式边缘缓存）
+# [[kv_namespaces]]
+# binding = "CACHE_KV"
+# id = "<your-kv-namespace-id>"
+
+# Cron 定时探测触发器（每分钟自动执行一次全球心跳检测）
+[triggers]
+crons = ["* * * * *"]
