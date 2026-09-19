@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { ThemeProvider } from './context/ThemeContext';
 import { Header } from './components/Header';
 import { OverviewCards } from './components/OverviewCards';
@@ -117,6 +117,40 @@ export function AppContent() {
     return sessionStorage.getItem('cloudpulse_admin_auth') === 'true';
   });
 
+  // Sync initial data from D1/Worker Backend API
+  const fetchFleetData = useCallback(async () => {
+    try {
+      const [monRes, incRes, nodeRes, stRes] = await Promise.allSettled([
+        fetch('/api/monitors').then((r) => r.json()),
+        fetch('/api/incidents').then((r) => r.json()),
+        fetch('/api/nodes').then((r) => r.json()),
+        fetch('/api/status-page').then((r) => r.json()),
+      ]);
+
+      if (monRes.status === 'fulfilled' && monRes.value?.success && Array.isArray(monRes.value.monitors) && monRes.value.monitors.length > 0) {
+        setMonitors(monRes.value.monitors);
+      }
+      if (incRes.status === 'fulfilled' && incRes.value?.success && Array.isArray(incRes.value.incidents)) {
+        setIncidents(incRes.value.incidents);
+      }
+      if (nodeRes.status === 'fulfilled' && nodeRes.value?.success && Array.isArray(nodeRes.value.nodes)) {
+        setGlobalNodes(nodeRes.value.nodes);
+      }
+      if (stRes.status === 'fulfilled' && stRes.value?.success && stRes.value.config) {
+        setStatusPageConfig(stRes.value.config);
+      }
+    } catch (e) {
+      console.warn('Backend API not responding, using cached/local state:', e);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchFleetData();
+    // Poll updates every 30s to keep in sync with background Cron
+    const interval = setInterval(fetchFleetData, 30000);
+    return () => clearInterval(interval);
+  }, [fetchFleetData]);
+
   const handleAuthenticate = (password: string) => {
     if (password === adminPassword) {
       sessionStorage.setItem('cloudpulse_admin_auth', 'true');
@@ -165,27 +199,59 @@ export function AppContent() {
     if (data.nodes) setGlobalNodes(data.nodes);
   };
 
-  const handleResetData = () => {
+  const handleResetData = async () => {
+    try {
+      const res = await fetch('/api/reset-data', { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        setMonitors(data.monitors || initialMonitors);
+        setIncidents(data.incidents || initialIncidents);
+        setGlobalNodes(data.nodes || initialGlobalNodes);
+        setStatusPageConfig(data.statusPageConfig || initialStatusPageConfig);
+        setWebhooks(initialWebhooks);
+        return;
+      }
+    } catch (e) {
+      console.warn('Failed to call reset API:', e);
+    }
     setMonitors(initialMonitors);
     setIncidents(initialIncidents);
     setWebhooks(initialWebhooks);
     setGlobalNodes(initialGlobalNodes);
   };
 
-  const handleUpdateNode = (updatedNode: GlobalNode) => {
+  const handleUpdateNode = async (updatedNode: GlobalNode) => {
     if (!handleRequireAuth('修改全球边缘测速节点需要管理员密码授权')) {
       return;
     }
     setGlobalNodes((prev) =>
       prev.map((n) => (n.code === updatedNode.code ? updatedNode : n))
     );
+    try {
+      await fetch(`/api/nodes/${encodeURIComponent(updatedNode.code)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedNode),
+      });
+    } catch (e) {
+      console.warn('Failed to persist node update to backend:', e);
+    }
   };
 
-  const handleAddNode = (newNode: GlobalNode) => {
+  const handleAddNode = async (newNode: GlobalNode) => {
     if (!handleRequireAuth('添加全球边缘测速节点需要管理员密码授权')) {
       return;
     }
     setGlobalNodes((prev) => [newNode, ...prev]);
+    try {
+      await fetch('/api/nodes', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newNode),
+      });
+    } catch (e) {
+      console.warn('Failed to persist node creation to backend:', e);
+    }
   };
 
   // AI SLA Report modal state
@@ -211,21 +277,7 @@ export function AppContent() {
     localStorage.setItem(NODES_STORAGE_KEY, JSON.stringify(globalNodes));
   }, [globalNodes]);
 
-  // Periodic live check simulation & actual server endpoint checks
-  useEffect(() => {
-    const interval = setInterval(() => {
-      if (monitors.length > 0) {
-        const randomIndex = Math.floor(Math.random() * monitors.length);
-        const target = monitors[randomIndex];
-        if (target && !target.isPaused) {
-          executeLiveCheck(target.id, false);
-        }
-      }
-    }, 25000);
-    return () => clearInterval(interval);
-  }, [monitors]);
-
-  // Live Check function calling backend /api/check proxy
+  // Live Check function calling backend /api/check or /api/monitors/:id/probe proxy
   const executeLiveCheck = async (monitorId: string, isManual = false) => {
     const monitor = monitors.find((m) => m.id === monitorId);
     if (!monitor) return;
@@ -235,7 +287,23 @@ export function AppContent() {
     }
 
     try {
-      const response = await fetch('/api/check', {
+      const response = await fetch(`/api/monitors/${encodeURIComponent(monitorId)}/probe`, {
+        method: 'POST',
+      });
+
+      const resData = await response.json();
+      if (resData.success && resData.monitor) {
+        setMonitors((prev) =>
+          prev.map((m) => (m.id === monitorId ? resData.monitor : m))
+        );
+        if (selectedMonitor?.id === monitorId) {
+          setSelectedMonitor(resData.monitor);
+        }
+        return;
+      }
+
+      // Fallback check
+      const directResponse = await fetch('/api/check', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -246,7 +314,7 @@ export function AppContent() {
         }),
       });
 
-      const result = await response.json();
+      const result = await directResponse.json();
 
       setMonitors((prev) =>
         prev.map((m) => {
@@ -350,9 +418,35 @@ export function AppContent() {
   };
 
   // Monitor Actions
-  const handleSaveMonitor = (monitorData: Partial<Monitor>) => {
+  const handleSaveMonitor = async (monitorData: Partial<Monitor>) => {
     if (!handleRequireAuth('保存监控服务配置需要管理员密码授权')) {
       return;
+    }
+
+    try {
+      const res = await fetch('/api/monitors', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingMonitor?.id,
+          ...monitorData,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.monitor) {
+        if (editingMonitor) {
+          setMonitors((prev) =>
+            prev.map((m) => (m.id === editingMonitor.id ? data.monitor : m))
+          );
+        } else {
+          setMonitors((prev) => [data.monitor, ...prev]);
+        }
+        setShowFormModal(false);
+        setEditingMonitor(null);
+        return;
+      }
+    } catch (e) {
+      console.warn('Backend save monitor error, saving locally:', e);
     }
 
     if (editingMonitor) {
@@ -391,9 +485,23 @@ export function AppContent() {
     setEditingMonitor(null);
   };
 
-  const handleTogglePause = (monitorId: string) => {
+  const handleTogglePause = async (monitorId: string) => {
     if (!handleRequireAuth('更改监控运行或暂停状态需要管理员密码授权')) {
       return;
+    }
+    try {
+      const res = await fetch(`/api/monitors/${encodeURIComponent(monitorId)}/pause`, {
+        method: 'POST',
+      });
+      const data = await res.json();
+      if (data.success && data.monitor) {
+        setMonitors((prev) =>
+          prev.map((m) => (m.id === monitorId ? data.monitor : m))
+        );
+        return;
+      }
+    } catch (e) {
+      console.warn('Failed to call pause API, updating locally:', e);
     }
     setMonitors((prev) =>
       prev.map((m) => {
@@ -410,11 +518,18 @@ export function AppContent() {
     );
   };
 
-  const handleDeleteMonitor = (monitorId: string) => {
+  const handleDeleteMonitor = async (monitorId: string) => {
     if (!handleRequireAuth('删除监控服务需要管理员密码授权')) {
       return;
     }
     if (confirm('确认删除此 Uptime 监控项？')) {
+      try {
+        await fetch(`/api/monitors/${encodeURIComponent(monitorId)}`, {
+          method: 'DELETE',
+        });
+      } catch (e) {
+        console.warn('Delete monitor API failed:', e);
+      }
       setMonitors((prev) => prev.filter((m) => m.id !== monitorId));
       if (selectedMonitor?.id === monitorId) {
         setSelectedMonitor(null);
@@ -423,23 +538,51 @@ export function AppContent() {
   };
 
   // Incidents Actions
-  const handleAddIncident = (newInc: Incident) => {
+  const handleAddIncident = async (newInc: Incident) => {
     if (!handleRequireAuth('发布故障事件需要管理员密码授权')) {
       return;
+    }
+    try {
+      const res = await fetch('/api/incidents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          monitorId: newInc.monitorId,
+          monitorName: newInc.monitorName,
+          title: newInc.title,
+          severity: newInc.severity,
+          initialMessage: newInc.updates?.[0]?.message || '故障调查中',
+          summary: newInc.summary,
+        }),
+      });
+      const data = await res.json();
+      if (data.success && data.incident) {
+        setIncidents((prev) => [data.incident, ...prev]);
+        return;
+      }
+    } catch (e) {
+      console.warn('Failed to post incident to backend, storing locally:', e);
     }
     setIncidents((prev) => [newInc, ...prev]);
   };
 
-  const handleDeleteIncident = (incidentId: string) => {
+  const handleDeleteIncident = async (incidentId: string) => {
     if (!handleRequireAuth('删除故障事件记录需要管理员密码授权')) {
       return;
     }
     if (confirm('确认删除该故障通告记录？')) {
+      try {
+        await fetch(`/api/incidents/${encodeURIComponent(incidentId)}`, {
+          method: 'DELETE',
+        });
+      } catch (e) {
+        console.warn('Failed to delete incident via API:', e);
+      }
       setIncidents((prev) => prev.filter((i) => i.id !== incidentId));
     }
   };
 
-  const handleUpdateIncidentStatus = (
+  const handleUpdateIncidentStatus = async (
     incidentId: string,
     status: 'investigating' | 'identified' | 'monitoring' | 'resolved',
     message: string
@@ -447,6 +590,23 @@ export function AppContent() {
     if (!handleRequireAuth('更新事件状态需要管理员密码授权')) {
       return;
     }
+    try {
+      const res = await fetch(`/api/incidents/${encodeURIComponent(incidentId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, message }),
+      });
+      const data = await res.json();
+      if (data.success && data.incident) {
+        setIncidents((prev) =>
+          prev.map((inc) => (inc.id === incidentId ? data.incident : inc))
+        );
+        return;
+      }
+    } catch (e) {
+      console.warn('Failed to update incident on backend:', e);
+    }
+
     setIncidents((prev) =>
       prev.map((inc) => {
         if (inc.id === incidentId) {
@@ -551,11 +711,20 @@ export function AppContent() {
           <StatusPageBuilder
             config={statusPageConfig}
             monitors={monitors}
-            onUpdateConfig={(newCfg) => {
+            onUpdateConfig={async (newCfg) => {
               if (!handleRequireAuth('更新公开状态页配置需要管理员密码授权')) {
                 return;
               }
               setStatusPageConfig((prev) => ({ ...prev, ...newCfg }));
+              try {
+                await fetch('/api/status-page', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(newCfg),
+                });
+              } catch (e) {
+                console.warn('Failed to update status page on server:', e);
+              }
             }}
           />
         )}
@@ -573,11 +742,20 @@ export function AppContent() {
             globalNodes={globalNodes}
             webhooks={webhooks}
             statusPageConfig={statusPageConfig}
-            onUpdateStatusPageConfig={(newCfg) => {
+            onUpdateStatusPageConfig={async (newCfg) => {
               if (!handleRequireAuth('更新公开状态页配置需要管理员密码授权')) {
                 return;
               }
               setStatusPageConfig((prev) => ({ ...prev, ...newCfg }));
+              try {
+                await fetch('/api/status-page', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify(newCfg),
+                });
+              } catch (e) {
+                console.warn('Failed to update status page on server:', e);
+              }
             }}
             onAddIncident={handleAddIncident}
             onUpdateIncidentStatus={handleUpdateIncidentStatus}

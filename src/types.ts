@@ -72,6 +72,7 @@ export interface Incident {
   title: string;
   status: 'investigating' | 'identified' | 'monitoring' | 'resolved';
   severity: 'critical' | 'major' | 'minor';
+  summary?: string;
   createdAt: number;
   resolvedAt?: number;
   updates: {

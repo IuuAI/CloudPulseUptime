@@ -1,0 +1,42 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cloudpulse-uptime",
+  "main": "worker/index.ts",
+  "compatibility_date": "2024-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // 1. Pages/SPA Static Assets binding (Frontend directory)
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS"
+  },
+
+  // 2. Cloudflare D1 Relational SQLite Database Binding
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "cloudpulse_prod_db",
+      "database_id": "REPLACE_WITH_YOUR_D1_DATABASE_ID",
+      "migrations_table": "d1_migrations",
+      "migrations_dir": "worker"
+    }
+  ],
+
+  // 3. Cloudflare KV Distributed Fast-Cache Namespace
+  "kv_namespaces": [
+    {
+      "binding": "KV",
+      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+    }
+  ],
+
+  // 4. Workers Cron Triggers (Automated background health checks every 1 minute)
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+
+  // 5. Cloudflare Workers Observability & Logs
+  "observability": {
+    "enabled": true
+  }
+}

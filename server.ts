@@ -3,6 +3,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import { createServer as createViteServer } from 'vite';
+import { db } from './server/db';
+import { startBackgroundChecker, executeProbeForMonitor, isSafeUrl } from './server/checker';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,6 +14,9 @@ async function startServer() {
   const PORT = 3000;
 
   app.use(express.json());
+
+  // Start background Cron loop (simulates Cloudflare Workers Cron trigger)
+  startBackgroundChecker(60);
 
   // Initialize Gemini AI client lazily
   let defaultAiClient: GoogleGenAI | null = null;
@@ -39,10 +44,91 @@ async function startServer() {
 
   // Health check API
   app.get('/api/health', (_req, res) => {
-    res.json({ status: 'ok', app: 'CloudPulse-UPtime', timestamp: Date.now() });
+    res.json({
+      status: 'ok',
+      app: 'CloudPulse-UPtime',
+      architecture: 'Cloudflare Pages + Workers + D1 + KV Ready',
+      timestamp: Date.now(),
+    });
   });
 
-  // Real-time endpoint check proxy API
+  // -------------------------------------------------------------
+  // 1. Monitors CRUD APIs (D1 Database persistence + KV cache)
+  // -------------------------------------------------------------
+  app.get('/api/monitors', (_req, res) => {
+    const monitors = db.getMonitors();
+    res.json({ success: true, monitors });
+  });
+
+  app.post('/api/monitors', (req, res) => {
+    const { id, name, url, type = 'http', intervalSeconds = 60, timeoutMs = 5000, expectedStatus = 200, group = 'Default', tags = [], notes = '' } = req.body;
+
+    if (!name || typeof name !== 'string' || !url || typeof url !== 'string') {
+      return res.status(400).json({ success: false, error: '监控名称与目标 URL 不能为空' });
+    }
+
+    if (!isSafeUrl(url)) {
+      return res.status(400).json({
+        success: false,
+        error: '安全限制: 目标 URL 禁止指向私有内网或保留地址 (SSRF Protection)',
+      });
+    }
+
+    const saved = db.upsertMonitor({
+      id,
+      name,
+      url,
+      type,
+      intervalSeconds,
+      timeoutMs,
+      expectedStatus,
+      group,
+      tags,
+      notes,
+    });
+
+    res.json({ success: true, monitor: saved });
+  });
+
+  app.delete('/api/monitors/:id', (req, res) => {
+    const success = db.deleteMonitor(req.params.id);
+    res.json({ success });
+  });
+
+  app.post('/api/monitors/:id/pause', (req, res) => {
+    const monitor = db.togglePauseMonitor(req.params.id);
+    if (!monitor) {
+      return res.status(404).json({ success: false, error: '未找到指定监控项' });
+    }
+    res.json({ success: true, monitor });
+  });
+
+  // Single monitor on-demand probe trigger
+  app.post('/api/monitors/:id/probe', async (req, res) => {
+    const monitor = db.getMonitor(req.params.id);
+    if (!monitor) {
+      return res.status(404).json({ success: false, error: '未找到指定监控项' });
+    }
+    const result = await executeProbeForMonitor(monitor);
+    const updated = db.getMonitor(req.params.id);
+    res.json({ success: true, result, monitor: updated });
+  });
+
+  // Trigger immediate full-fleet probe
+  app.post('/api/probe-all', async (_req, res) => {
+    const monitors = db.getMonitors().filter((m) => !m.isPaused);
+    const results = await Promise.allSettled(monitors.map((m) => executeProbeForMonitor(m)));
+    res.json({
+      success: true,
+      totalProbed: monitors.length,
+      monitors: db.getMonitors(),
+      timestamp: Date.now(),
+    });
+  });
+
+  // -------------------------------------------------------------
+  // 2. Real-time Endpoint Check Proxy API (SSRF Protected)
+  // -------------------------------------------------------------
   app.post('/api/check', async (req, res) => {
     const { url, method = 'GET', headers = {}, timeoutMs = 8000, expectedStatus = 200 } = req.body;
 
@@ -50,16 +136,21 @@ async function startServer() {
       return res.status(400).json({ error: 'Missing or invalid target URL parameter.' });
     }
 
+    if (!isSafeUrl(url)) {
+      return res.status(400).json({
+        error: '安全限制: 目标 URL 禁止指向私有内网或保留地址 (SSRF Protection)',
+      });
+    }
+
     const startTime = Date.now();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      // Perform live fetch check
       const response = await fetch(url, {
         method: method,
         headers: {
-          'User-Agent': 'CloudPulse-UPtime/1.0 EdgeChecker',
+          'User-Agent': 'CloudPulse-UPtime/2.0 (Cloudflare Edge Worker)',
           ...headers,
         },
         signal: controller.signal,
@@ -103,6 +194,112 @@ async function startServer() {
         error: errorMessage,
       });
     }
+  });
+
+  // -------------------------------------------------------------
+  // 3. Incidents & Status Page APIs (D1 Database)
+  // -------------------------------------------------------------
+  app.get('/api/incidents', (_req, res) => {
+    res.json({ success: true, incidents: db.getIncidents() });
+  });
+
+  app.post('/api/incidents', (req, res) => {
+    const { monitorId, monitorName, title, severity = 'major', initialMessage, summary = '' } = req.body;
+    if (!title || !initialMessage) {
+      return res.status(400).json({ success: false, error: '标题与初始进展说明不能为空' });
+    }
+
+    const now = Date.now();
+    const newIncident = {
+      id: `inc-${now}`,
+      monitorId: monitorId || 'global',
+      monitorName: monitorName || '核心网络系统',
+      title,
+      severity,
+      status: 'investigating' as const,
+      summary,
+      createdAt: now,
+      updates: [
+        {
+          timestamp: now,
+          status: 'investigating' as const,
+          message: initialMessage,
+        },
+      ],
+    };
+
+    db.upsertIncident(newIncident);
+    res.json({ success: true, incident: newIncident });
+  });
+
+  app.patch('/api/incidents/:id', (req, res) => {
+    const { status, message } = req.body;
+    const incidents = db.getIncidents();
+    const target = incidents.find((i) => i.id === req.params.id);
+
+    if (!target) {
+      return res.status(404).json({ success: false, error: '未找到指定事件记录' });
+    }
+
+    const now = Date.now();
+    if (status) target.status = status;
+    if (status === 'resolved') target.resolvedAt = now;
+    if (message) {
+      target.updates.unshift({
+        timestamp: now,
+        status: status || target.status,
+        message,
+      });
+    }
+
+    db.upsertIncident(target);
+    res.json({ success: true, incident: target });
+  });
+
+  app.delete('/api/incidents/:id', (req, res) => {
+    const success = db.deleteIncident(req.params.id);
+    res.json({ success });
+  });
+
+  // Edge Nodes APIs
+  app.get('/api/nodes', (_req, res) => {
+    res.json({ success: true, nodes: db.getEdgeNodes() });
+  });
+
+  app.patch('/api/nodes/:code', (req, res) => {
+    const updated = db.updateEdgeNode(req.params.code, req.body);
+    if (!updated) {
+      return res.status(404).json({ success: false, error: '未找到指定边缘节点' });
+    }
+    res.json({ success: true, node: updated });
+  });
+
+  app.post('/api/nodes', (req, res) => {
+    const node = db.addEdgeNode(req.body);
+    res.json({ success: true, node });
+  });
+
+  // Status Page Configuration APIs
+  app.get('/api/status-page', (_req, res) => {
+    res.json({ success: true, config: db.getStatusPageConfig() });
+  });
+
+  app.post('/api/status-page', (req, res) => {
+    const updated = db.updateStatusPageConfig(req.body);
+    res.json({ success: true, config: updated });
+  });
+
+  // Reset database state to seed defaults
+  app.post('/api/reset-data', (_req, res) => {
+    const freshDb = db.resetAll();
+    res.json({
+      success: true,
+      message: '已成功重置为 Cloudflare D1 初始种子数据',
+      monitors: freshDb.monitors,
+      incidents: freshDb.incidents,
+      nodes: freshDb.edgeNodes,
+      statusPageConfig: freshDb.statusPageConfig,
+    });
   });
 
   // Cloudflare Quota & API Token Verification API
