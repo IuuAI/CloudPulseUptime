@@ -525,13 +525,16 @@ export function AppContent() {
 
         {/* TAB 2: CLOUDFLARE EDGE MAP (Includes New Node button) */}
         {activeTab === 'edge_map' && (
-          <GlobalEdgeMap
-            nodes={globalNodes}
-            isAdminAuthenticated={isAdminAuthenticated}
-            onRequestAuth={handleRequireAuth}
-            onUpdateNode={handleUpdateNode}
-            onAddNode={handleAddNode}
-          />
+          <div className="space-y-4">
+            <OverviewCards monitors={monitors} incidents={incidents} />
+            <GlobalEdgeMap
+              nodes={globalNodes}
+              isAdminAuthenticated={isAdminAuthenticated}
+              onRequestAuth={handleRequireAuth}
+              onUpdateNode={handleUpdateNode}
+              onAddNode={handleAddNode}
+            />
+          </div>
         )}
 
         {/* TAB 3: INCIDENTS MANAGER */}

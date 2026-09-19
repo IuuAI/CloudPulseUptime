@@ -43,7 +43,7 @@ export const OverviewCards: React.FC<OverviewCardsProps> = ({
   const isAllGood = metrics.downCount === 0 && metrics.degradedCount === 0;
 
   return (
-    <div className="mb-6 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 p-4 sm:p-5 shadow-xs transition-colors">
+    <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 p-4 sm:p-5 shadow-xs transition-colors">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         {/* Left: Overall Status Banner */}
         <div className="flex items-center gap-3.5">
