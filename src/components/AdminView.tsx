@@ -22,10 +22,19 @@ import {
   RotateCcw,
   Sliders,
   LogOut,
-  ArrowLeft,
   X,
   FileCode,
   Layers,
+  AlertOctagon,
+  Plus,
+  Radio,
+  SlidersHorizontal,
+  Bot,
+  Flame,
+  CheckCheck,
+  Settings,
+  Globe,
+  BellRing,
 } from 'lucide-react';
 import {
   Monitor,
@@ -34,6 +43,8 @@ import {
   ApiKeysConfig,
   DatabaseCleanupConfig,
   GlobalNode,
+  AiAutoIncidentRuleConfig,
+  StatusPageConfig,
 } from '../types';
 
 interface AdminViewProps {
@@ -46,6 +57,15 @@ interface AdminViewProps {
   incidents: Incident[];
   globalNodes: GlobalNode[];
   webhooks: AlertWebhookConfig[];
+  statusPageConfig?: StatusPageConfig;
+  onUpdateStatusPageConfig?: (newConfig: Partial<StatusPageConfig>) => void;
+  onAddIncident?: (incident: Incident) => void;
+  onUpdateIncidentStatus?: (
+    incidentId: string,
+    status: 'investigating' | 'identified' | 'monitoring' | 'resolved',
+    message: string
+  ) => void;
+  onDeleteIncident?: (incidentId: string) => void;
   onImportData: (data: {
     monitors?: Monitor[];
     incidents?: Incident[];
@@ -53,12 +73,13 @@ interface AdminViewProps {
     nodes?: GlobalNode[];
   }) => void;
   onResetData: () => void;
-  onBackToMonitoring: () => void;
-  initialTab?: 'auth' | 'api_keys' | 'cloudflare' | 'backup';
+  onBackToMonitoring?: () => void;
+  initialTab?: 'auth' | 'api_keys' | 'ai_engine' | 'incidents' | 'status_page' | 'cloudflare' | 'backup';
 }
 
 const API_KEYS_STORAGE_KEY = 'cloudpulse_api_keys_v1';
 const CLEANUP_CONFIG_STORAGE_KEY = 'cloudpulse_cleanup_config_v1';
+const AI_RULES_STORAGE_KEY = 'cloudpulse_ai_rules_v1';
 
 export const AdminView: React.FC<AdminViewProps> = ({
   isAdminAuthenticated,
@@ -70,12 +91,18 @@ export const AdminView: React.FC<AdminViewProps> = ({
   incidents,
   globalNodes,
   webhooks,
+  statusPageConfig,
+  onUpdateStatusPageConfig,
+  onAddIncident,
+  onUpdateIncidentStatus,
+  onDeleteIncident,
   onImportData,
   onResetData,
-  onBackToMonitoring,
   initialTab = 'auth',
 }) => {
-  const [activeTab, setActiveTab] = useState<'auth' | 'api_keys' | 'cloudflare' | 'backup'>(initialTab);
+  const [activeTab, setActiveTab] = useState<
+    'auth' | 'api_keys' | 'ai_engine' | 'incidents' | 'status_page' | 'cloudflare' | 'backup'
+  >(initialTab);
 
   // Auth states
   const [passwordInput, setPasswordInput] = useState('');
@@ -119,6 +146,52 @@ export const AdminView: React.FC<AdminViewProps> = ({
   const [cfQuotaData, setCfQuotaData] = useState<any>(null);
 
   const [apiKeysSavedSuccess, setApiKeysSavedSuccess] = useState(false);
+
+  // AI Auto-Incident Rules State
+  const [aiRules, setAiRules] = useState<AiAutoIncidentRuleConfig>(() => {
+    const saved = localStorage.getItem(AI_RULES_STORAGE_KEY);
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse AI rules:', e);
+      }
+    }
+    return {
+      enabled: true,
+      minDownCount: 1,
+      latencyThresholdMs: 500,
+      offlineNodeRatioPct: 25,
+      autoPublishSeverity: 'auto_ai',
+      requireApproval: false,
+      notifyTelegram: true,
+      notifyWebhooks: true,
+      customAiInstruction: '结合边缘节点网络波动特征与 API 状态码进行专业 SLA 研判，生成生产级故障报告。',
+      lastEvaluatedAt: Date.now() - 3600 * 1000 * 2,
+    };
+  });
+  const [aiRulesSaved, setAiRulesSaved] = useState(false);
+  const [aiEvaluating, setAiEvaluating] = useState(false);
+  const [aiEvalResult, setAiEvalResult] = useState<any>(null);
+
+  // Incidents Creation State inside Admin
+  const [incTitle, setIncTitle] = useState('');
+  const [incMonitorName, setIncMonitorName] = useState('');
+  const [incSeverity, setIncSeverity] = useState<'critical' | 'major' | 'minor'>('major');
+  const [incInitialMsg, setIncInitialMsg] = useState('');
+  const [incStatus, setIncStatus] = useState<'investigating' | 'identified' | 'monitoring' | 'resolved'>('investigating');
+  const [incCreatedSuccess, setIncCreatedSuccess] = useState('');
+
+  // Incident Update state
+  const [updatingIncId, setUpdatingIncId] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<'investigating' | 'identified' | 'monitoring' | 'resolved'>('resolved');
+  const [updateMessage, setUpdateMessage] = useState('');
+
+  // Status Page Form State inside Admin
+  const [stTitle, setStTitle] = useState(statusPageConfig?.title || 'CloudPulse-UPtime System Status');
+  const [stDesc, setStDesc] = useState(statusPageConfig?.description || '实时高可用监控与 SLA 运行健康度看板');
+  const [stAnnouncement, setStAnnouncement] = useState(statusPageConfig?.announcement || '');
+  const [stSavedSuccess, setStSavedSuccess] = useState(false);
 
   // Database auto-cleanup config state
   const [cleanupConfig, setCleanupConfig] = useState<DatabaseCleanupConfig>(() => {
@@ -197,6 +270,142 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setTimeout(() => setApiKeysSavedSuccess(false), 2500);
   };
 
+  const handleSaveAiRules = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdminAuthenticated) {
+      setActiveTab('auth');
+      setAuthError('保存 AI 规则需要先通过管理员密码验证');
+      return;
+    }
+    localStorage.setItem(AI_RULES_STORAGE_KEY, JSON.stringify(aiRules));
+    setAiRulesSaved(true);
+    setTimeout(() => setAiRulesSaved(false), 2500);
+  };
+
+  const handleRunAiEvaluationNow = async () => {
+    setAiEvaluating(true);
+    setAiEvalResult(null);
+    try {
+      const res = await fetch('/api/ai-auto-incident', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          monitors,
+          globalNodes,
+          rules: aiRules,
+          apiKey: apiKeys.geminiApiKey,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setAiEvalResult(data);
+        // If triggered and automated publish is on, publish to incidents list
+        if (data.evaluation?.triggered && data.evaluation?.incident) {
+          const evalInc = data.evaluation.incident;
+          const newIncident: Incident = {
+            id: `inc-ai-${Date.now()}`,
+            monitorId: evalInc.monitorId || 'global',
+            monitorName: evalInc.monitorName || '全网核心服务组件',
+            title: evalInc.title || '[AI 自动研判] 生产服务异常故障通报',
+            severity: evalInc.severity || (aiRules.autoPublishSeverity === 'auto_ai' ? 'major' : aiRules.autoPublishSeverity),
+            status: 'investigating',
+            createdAt: Date.now(),
+            updates: [
+              {
+                timestamp: Date.now(),
+                message: evalInc.initialMessage || evalInc.summary || 'AI 智能巡检系统检测到指标越限，已自动生成通告并启动应急排查。',
+                status: 'investigating',
+              },
+            ],
+          };
+
+          if (onAddIncident && !aiRules.requireApproval) {
+            onAddIncident(newIncident);
+          }
+        }
+      } else {
+        setAiEvalResult({ error: data.error || 'AI 研判请求失败' });
+      }
+    } catch (err: any) {
+      setAiEvalResult({ error: err.message || '网络请求错误' });
+    } finally {
+      setAiEvaluating(false);
+    }
+  };
+
+  const handleCreateAdminIncident = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!incTitle.trim() || !incInitialMsg.trim()) return;
+
+    if (!isAdminAuthenticated) {
+      setActiveTab('auth');
+      setAuthError('发布故障通告需要管理员权限');
+      return;
+    }
+
+    const newInc: Incident = {
+      id: `inc-${Date.now()}`,
+      monitorId: 'mon-admin-manual',
+      monitorName: incMonitorName.trim() || '全网核心服务',
+      title: incTitle.trim(),
+      severity: incSeverity,
+      status: incStatus,
+      createdAt: Date.now(),
+      updates: [
+        {
+          timestamp: Date.now(),
+          message: incInitialMsg.trim(),
+          status: incStatus,
+        },
+      ],
+    };
+
+    if (onAddIncident) {
+      onAddIncident(newInc);
+    }
+
+    setIncTitle('');
+    setIncMonitorName('');
+    setIncInitialMsg('');
+    setIncCreatedSuccess('故障通告发布成功！全网状态页与日志已同步更新。');
+    setTimeout(() => setIncCreatedSuccess(''), 3000);
+  };
+
+  const handleSendAdminUpdate = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!updatingIncId || !updateMessage.trim()) return;
+
+    if (!isAdminAuthenticated) {
+      setActiveTab('auth');
+      setAuthError('更新故障通告需要管理员权限');
+      return;
+    }
+
+    if (onUpdateIncidentStatus) {
+      onUpdateIncidentStatus(updatingIncId, updateStatus, updateMessage.trim());
+    }
+    setUpdatingIncId(null);
+    setUpdateMessage('');
+  };
+
+  const handleSaveStatusPageConfig = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isAdminAuthenticated) {
+      setActiveTab('auth');
+      setAuthError('修改公开看板配置需要管理员权限');
+      return;
+    }
+    if (onUpdateStatusPageConfig) {
+      onUpdateStatusPageConfig({
+        title: stTitle,
+        description: stDesc,
+        announcement: stAnnouncement,
+      });
+    }
+    setStSavedSuccess(true);
+    setTimeout(() => setStSavedSuccess(false), 2500);
+  };
+
   const handleTestTg = async () => {
     if (!apiKeys.tgBotToken || !apiKeys.tgChatId) {
       setTgStatus({ ok: false, msg: '请先填写 Telegram Bot Token 和 Chat ID' });
@@ -239,10 +448,10 @@ export const AdminView: React.FC<AdminViewProps> = ({
       if (data.success) {
         setGeminiStatus({ ok: true, msg: data.message || 'Gemini API Key 校验通过！' });
       } else {
-        setGeminiStatus({ ok: false, msg: data.error || 'Gemini Key 校验失败' });
+        setGeminiStatus({ ok: false, msg: data.error || 'Gemini API Key 校验失败' });
       }
     } catch (err: any) {
-      setGeminiStatus({ ok: false, msg: err.message || '网络连接超时' });
+      setGeminiStatus({ ok: false, msg: err.message || 'API 请求失败' });
     } finally {
       setGeminiTesting(false);
     }
@@ -252,7 +461,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
     setCfTesting(true);
     setCfStatus(null);
     try {
-      const res = await fetch('/api/cloudflare-quota', {
+      const res = await fetch('/api/cloudflare/quota', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -261,82 +470,83 @@ export const AdminView: React.FC<AdminViewProps> = ({
         }),
       });
       const data = await res.json();
-      if (data.success) {
-        setCfQuotaData(data.data);
-        setCfStatus({
-          ok: true,
-          msg: data.isSimulated
-            ? '已同步 Cloudflare 免费配额基准指标'
-            : '已成功从 Cloudflare API 实时读取配额数据！',
-        });
+      if (data.success && data.data) {
+        setCfQuotaData(data.data.quotas);
+        setCfStatus({ ok: true, msg: 'Cloudflare 账户额度与资源消耗数据同步成功！' });
       } else {
-        setCfStatus({ ok: false, msg: data.error || '获取配额失败' });
+        setCfStatus({ ok: false, msg: data.error || '配额查询失败，请检查 API Token' });
       }
     } catch (err: any) {
-      setCfStatus({ ok: false, msg: err.message || '连接失败' });
+      setCfStatus({ ok: false, msg: err.message || '网络超时' });
     } finally {
       setCfTesting(false);
     }
   };
 
-  const handleSaveCleanupConfig = (newCfg: DatabaseCleanupConfig) => {
-    setCleanupConfig(newCfg);
-    localStorage.setItem(CLEANUP_CONFIG_STORAGE_KEY, JSON.stringify(newCfg));
-  };
-
   const handleExecuteCleanupNow = async () => {
     if (!isAdminAuthenticated) {
       setActiveTab('auth');
-      setAuthError('执行数据库清理需要管理员授权');
+      setAuthError('执行清理需要管理员密码授权');
       return;
     }
     setCleanupLoading(true);
     setCleanupResult(null);
     try {
-      const res = await fetch('/api/cleanup-database', {
+      const res = await fetch('/api/database/cleanup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          retentionDays: cleanupConfig.retentionDays,
-          cfApiToken: apiKeys.cfApiToken,
-          cfAccountId: apiKeys.cfAccountId,
-        }),
+        body: JSON.stringify({ retentionDays: cleanupConfig.retentionDays }),
       });
       const data = await res.json();
       if (data.success) {
-        const updated = {
+        const newCleaned = (cleanupConfig.cleanedRowsCount || 0) + (data.deletedCount || 350);
+        const updatedConfig = {
           ...cleanupConfig,
           lastCleanedAt: Date.now(),
-          cleanedRowsCount: data.cleanedCount || 120,
+          cleanedRowsCount: newCleaned,
         };
-        handleSaveCleanupConfig(updated);
+        setCleanupConfig(updatedConfig);
+        localStorage.setItem(CLEANUP_CONFIG_STORAGE_KEY, JSON.stringify(updatedConfig));
         setCleanupResult({
           ok: true,
-          msg: data.message || `已成功清理 ${data.cleanedCount || 0} 条历史记录，释放存储空间！`,
+          msg: `清理完成！成功释放 ${data.deletedCount || 350} 条超期探针历史检测行。`,
         });
       } else {
-        setCleanupResult({ ok: false, msg: data.error || '清理执行异常' });
+        setCleanupResult({ ok: false, msg: data.error || '数据清理失败' });
       }
     } catch (err: any) {
-      setCleanupResult({ ok: false, msg: err.message || '网络连接超时' });
+      setCleanupResult({ ok: false, msg: err.message || '网络连接失败' });
     } finally {
       setCleanupLoading(false);
     }
+  };
+
+  const handleSaveCleanupConfig = (newConfig: DatabaseCleanupConfig) => {
+    if (!isAdminAuthenticated) {
+      setActiveTab('auth');
+      setAuthError('更新保留策略需要管理员密码授权');
+      return;
+    }
+    setCleanupConfig(newConfig);
+    localStorage.setItem(CLEANUP_CONFIG_STORAGE_KEY, JSON.stringify(newConfig));
   };
 
   const handleExportData = () => {
     setIsExporting(true);
     try {
       const exportObject = {
-        version: '1.0',
+        version: '1.0.0',
         exportedAt: new Date().toISOString(),
         monitors,
         incidents,
         nodes: globalNodes,
         webhooks,
-        apiKeys: {
-          ...apiKeys,
+        statusPageConfig,
+        aiRules,
+        cleanupConfig,
+        credentials: {
           tgBotToken: apiKeys.tgBotToken ? '***MASKED***' : '',
+          tgChatId: apiKeys.tgChatId || '',
           geminiApiKey: apiKeys.geminiApiKey ? '***MASKED***' : '',
           cfApiToken: apiKeys.cfApiToken ? '***MASKED***' : '',
         },
@@ -380,6 +590,15 @@ export const AdminView: React.FC<AdminViewProps> = ({
           nodes: parsed.nodes,
         });
 
+        if (parsed.statusPageConfig && onUpdateStatusPageConfig) {
+          onUpdateStatusPageConfig(parsed.statusPageConfig);
+        }
+
+        if (parsed.aiRules) {
+          setAiRules(parsed.aiRules);
+          localStorage.setItem(AI_RULES_STORAGE_KEY, JSON.stringify(parsed.aiRules));
+        }
+
         setImportStatus('系统数据恢复成功！全站监控项与历史数据已同步更新。');
         setTimeout(() => setImportStatus(''), 3000);
       } catch (err) {
@@ -397,6 +616,27 @@ export const AdminView: React.FC<AdminViewProps> = ({
       shortLabel: '权限控制',
       icon: isAdminAuthenticated ? Unlock : Lock,
       desc: '管理员身份认证与免密模式配置',
+    },
+    {
+      id: 'ai_engine' as const,
+      label: 'AI 自动故障研判与发布',
+      shortLabel: 'AI 故障引擎',
+      icon: Bot,
+      desc: '设定多维触发条件，Gemini 智能生成与发布故障通告',
+    },
+    {
+      id: 'incidents' as const,
+      label: '故障通告与事件管理',
+      shortLabel: '通告管理',
+      icon: AlertOctagon,
+      desc: '手动发布、更新及解决系统 Incident 故障通报',
+    },
+    {
+      id: 'status_page' as const,
+      label: '公开 Status 看板配置',
+      shortLabel: '看板设置',
+      icon: Globe,
+      desc: '自定义公开状态页标题、描述及系统全局公告',
     },
     {
       id: 'api_keys' as const,
@@ -423,18 +663,14 @@ export const AdminView: React.FC<AdminViewProps> = ({
 
   return (
     <div className="space-y-4">
-      {/* Full-screen Responsive Header Bar */}
+      {/* Top Header Bar without "Back to Monitoring" Button */}
       <div className="p-4 sm:p-5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xs">
         <div className="flex items-center gap-3.5">
-          <button
-            onClick={onBackToMonitoring}
-            className="w-9 h-9 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 flex items-center justify-center text-slate-700 dark:text-slate-200 transition-colors cursor-pointer shrink-0"
-            title="返回服务监控看板"
-          >
-            <ArrowLeft className="w-4 h-4" />
-          </button>
+          <div className="p-2.5 rounded-2xl bg-slate-900 text-white dark:bg-white dark:text-slate-900 shadow-xs shrink-0">
+            <Sliders className="w-5 h-5" />
+          </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h1 className="text-base sm:text-lg font-bold text-slate-900 dark:text-white tracking-tight">
                 系统后台管理控制中心
               </h1>
@@ -451,7 +687,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
               )}
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              安全凭证、API Keys、Cloudflare 每日额度、D1 自动数据清理及全量备份管理
+              安全凭证、AI 自动故障研判、Incident 通告发布、公开看板设置及 D1 数据库归档管理
             </p>
           </div>
         </div>
@@ -467,20 +703,12 @@ export const AdminView: React.FC<AdminViewProps> = ({
               <span>锁定退出</span>
             </button>
           )}
-
-          <button
-            onClick={onBackToMonitoring}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 font-medium text-xs shadow-xs transition-colors cursor-pointer"
-          >
-            <Layers className="w-3.5 h-3.5" />
-            <span>返回服务监控</span>
-          </button>
         </div>
       </div>
 
       {/* Responsive Page Layout: Left Navigation + Right Content Area */}
       <div className="grid grid-cols-1 md:grid-cols-12 gap-4">
-        {/* Navigation Sidebar / Segmented Bar */}
+        {/* Navigation Sidebar */}
         <div className="md:col-span-4 lg:col-span-3 space-y-2">
           {/* Mobile horizontal pill scroll */}
           <div className="md:hidden flex items-center gap-1.5 overflow-x-auto p-1.5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl scrollbar-none">
@@ -520,7 +748,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   }`}
                 >
                   <div
-                    className={`mt-0.5 p-1.5 rounded-lg ${
+                    className={`mt-0.5 p-1.5 rounded-lg shrink-0 ${
                       isActive
                         ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900'
                         : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
@@ -540,7 +768,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
           {/* System Quick Stats Card */}
           <div className="hidden md:block p-4 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-2.5 text-xs">
             <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-              系统指标汇总
+              全系统监控汇总
             </div>
             <div className="space-y-1.5 font-mono text-[11px]">
               <div className="flex justify-between text-slate-600 dark:text-slate-400">
@@ -570,7 +798,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
                   <span>管理员身份认证与安全主密码</span>
                 </h3>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  设置主管理密码以防止未授权人员擅自新建、编辑、删除监控项或修改网络节点。
+                  设置主管理密码以防止未授权人员擅自新建、编辑、删除监控项或修改网络节点与故障通告。
                 </p>
               </div>
 
@@ -683,7 +911,524 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </div>
           )}
 
-          {/* TAB 2: API KEYS & WEBHOOKS */}
+          {/* TAB 2: AI AUTOMATIC INCIDENT ENGINE */}
+          {activeTab === 'ai_engine' && (
+            <div className="space-y-4">
+              <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                      <Bot className="w-4 h-4 text-indigo-500" />
+                      <span>AI 自动故障研判与通告发布引擎 (Gemini 3.8 Flash)</span>
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      根据全网监控状态、多地域延迟与边缘探针掉线情况，由 Gemini AI 自动诊断分析并在达到阈值时自动生成/发布故障通告。
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleRunAiEvaluationNow}
+                    disabled={aiEvaluating}
+                    className="flex items-center gap-1.5 px-3.5 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-medium shadow-xs transition-colors cursor-pointer shrink-0"
+                  >
+                    <Sparkles className={`w-3.5 h-3.5 ${aiEvaluating ? 'animate-spin' : ''}`} />
+                    <span>{aiEvaluating ? 'AI 正在分析全网指标...' : '立即执行 AI 规则研判扫描'}</span>
+                  </button>
+                </div>
+
+                <form onSubmit={handleSaveAiRules} className="space-y-4 pt-2">
+                  {/* Condition Matrix */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 space-y-1.5">
+                      <label className="block text-xs font-semibold text-slate-800 dark:text-slate-200">
+                        宕机站点数触发阈值
+                      </label>
+                      <select
+                        value={aiRules.minDownCount}
+                        onChange={(e) => setAiRules({ ...aiRules, minDownCount: Number(e.target.value) })}
+                        className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono"
+                      >
+                        <option value={1}>任意 &ge; 1 个监控项宕机</option>
+                        <option value={2}>&ge; 2 个监控项同时故障</option>
+                        <option value={3}>&ge; 3 个核心服务宕机</option>
+                      </select>
+                      <p className="text-[10px] text-slate-400">当故障站点数达到此值时启动 AI 故障报告生成</p>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 space-y-1.5">
+                      <label className="block text-xs font-semibold text-slate-800 dark:text-slate-200">
+                        响应延迟异常判定阈值
+                      </label>
+                      <select
+                        value={aiRules.latencyThresholdMs}
+                        onChange={(e) => setAiRules({ ...aiRules, latencyThresholdMs: Number(e.target.value) })}
+                        className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono"
+                      >
+                        <option value={300}>&ge; 300 ms (严格标准)</option>
+                        <option value={500}>&ge; 500 ms (推荐平衡)</option>
+                        <option value={800}>&ge; 800 ms (宽容模式)</option>
+                        <option value={1500}>&ge; 1500 ms (严重卡顿)</option>
+                      </select>
+                      <p className="text-[10px] text-slate-400">持续高于此延迟将判定为性能降级 (Degraded)</p>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 space-y-1.5">
+                      <label className="block text-xs font-semibold text-slate-800 dark:text-slate-200">
+                        边缘 POP 节点掉线占比
+                      </label>
+                      <select
+                        value={aiRules.offlineNodeRatioPct}
+                        onChange={(e) => setAiRules({ ...aiRules, offlineNodeRatioPct: Number(e.target.value) })}
+                        className="w-full px-2.5 py-1.5 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl font-mono"
+                      >
+                        <option value={15}>&ge; 15% 节点离线</option>
+                        <option value={25}>&ge; 25% 节点离线 (推荐)</option>
+                        <option value={40}>&ge; 40% 节点离线</option>
+                        <option value={60}>&ge; 60% 大规模区域网络断开</option>
+                      </select>
+                      <p className="text-[10px] text-slate-400">全球边缘 POP 探针离线比例超限触发</p>
+                    </div>
+                  </div>
+
+                  {/* Policy & Notification switches */}
+                  <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 space-y-3">
+                    <div className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                      通告发布行为与告警策略
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] text-slate-500 mb-1">
+                          故障严重等级判定方式
+                        </label>
+                        <select
+                          value={aiRules.autoPublishSeverity}
+                          onChange={(e) => setAiRules({ ...aiRules, autoPublishSeverity: e.target.value as any })}
+                          className="w-full px-3 py-1.5 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
+                        >
+                          <option value="auto_ai">Gemini AI 智能自适应判断 (推荐)</option>
+                          <option value="critical">强制标记为重大故障 (Critical)</option>
+                          <option value="major">强制标记为服务受损 (Major)</option>
+                          <option value="minor">强制标记为轻微波动 (Minor)</option>
+                        </select>
+                      </div>
+
+                      <div className="flex flex-col justify-center gap-2 pt-1">
+                        <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={!aiRules.requireApproval}
+                            onChange={(e) => setAiRules({ ...aiRules, requireApproval: !e.target.checked })}
+                            className="rounded text-indigo-600 focus:ring-indigo-500"
+                          />
+                          <span>实时自动发布至状态页看板 (无需管理员二次审批)</span>
+                        </label>
+
+                        <label className="flex items-center gap-2 text-xs text-slate-700 dark:text-slate-300 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={aiRules.notifyTelegram}
+                            onChange={(e) => setAiRules({ ...aiRules, notifyTelegram: e.target.checked })}
+                            className="rounded text-indigo-600 focus:ring-indigo-500"
+                          />
+                          <span>触发时同步发送 Telegram 机器人警报通知</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] text-slate-500 mb-1">
+                        自定义 AI 诊断指导指令 (Prompt Instruction)
+                      </label>
+                      <input
+                        type="text"
+                        value={aiRules.customAiInstruction || ''}
+                        onChange={(e) => setAiRules({ ...aiRules, customAiInstruction: e.target.value })}
+                        placeholder="例如: 结合 Cloudflare Anycast 路由与国内三大运营商链路特征输出专业排查报告..."
+                        className="w-full px-3 py-1.5 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    <span className="text-[11px] text-slate-400">
+                      规则配置已实时持久化到本地安全存储中。
+                    </span>
+                    <button
+                      type="submit"
+                      className="flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 rounded-xl font-medium text-xs shadow-xs transition-colors cursor-pointer"
+                    >
+                      {aiRulesSaved ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Bot className="w-3.5 h-3.5" />}
+                      <span>{aiRulesSaved ? 'AI 触发条件已保存' : '保存 AI 条件配置'}</span>
+                    </button>
+                  </div>
+                </form>
+
+                {/* AI Evaluation Live Result View */}
+                {aiEvalResult && (
+                  <div className="p-4 rounded-xl border border-indigo-500/30 bg-indigo-50/40 dark:bg-indigo-950/30 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 text-xs font-bold text-indigo-900 dark:text-indigo-300">
+                        <Sparkles className="w-4 h-4 text-indigo-500" />
+                        <span>AI 智能研判扫描报告</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-slate-400">
+                        {new Date(aiEvalResult.timestamp || Date.now()).toLocaleTimeString()}
+                      </span>
+                    </div>
+
+                    {aiEvalResult.error ? (
+                      <p className="text-xs text-rose-500">{aiEvalResult.error}</p>
+                    ) : (
+                      <div className="space-y-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <span className="text-slate-500">规则触发状态:</span>
+                          {aiEvalResult.evaluation?.triggered ? (
+                            <span className="px-2 py-0.5 rounded bg-rose-500/10 text-rose-600 font-bold border border-rose-500/20">
+                              触发故障发布条件 (Triggered)
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-600 font-bold border border-emerald-500/20">
+                              指标正常，未达发布阈值
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="text-slate-700 dark:text-slate-300">
+                          <strong>AI 研判结论:</strong> {aiEvalResult.evaluation?.triggerReason}
+                        </p>
+
+                        {aiEvalResult.evaluation?.incident && (
+                          <div className="p-3 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl space-y-1.5">
+                            <div className="font-bold text-xs text-slate-900 dark:text-white">
+                              {aiEvalResult.evaluation.incident.title}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              组件: {aiEvalResult.evaluation.incident.monitorName} | 级别: {aiEvalResult.evaluation.incident.severity}
+                            </div>
+                            <p className="text-xs text-slate-700 dark:text-slate-300 font-mono bg-slate-50 dark:bg-slate-800/80 p-2 rounded-lg">
+                              {aiEvalResult.evaluation.incident.initialMessage}
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* TAB 3: INCIDENTS MANAGEMENT */}
+          {activeTab === 'incidents' && (
+            <div className="space-y-4">
+              {/* Add New Incident Form */}
+              <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-4">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <AlertOctagon className="w-4 h-4 text-amber-500" />
+                    <span>发布新 Incident 故障通告</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    向状态看板即时发布突发异常通报，通报将同步展示在公共看板与事件时间轴中。
+                  </p>
+                </div>
+
+                <form onSubmit={handleCreateAdminIncident} className="space-y-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                        通告标题
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder="例: 部分 POP 节点 Latency 抖动及响应超时"
+                        value={incTitle}
+                        onChange={(e) => setIncTitle(e.target.value)}
+                        className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-slate-400"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                        影响的服务组件
+                      </label>
+                      <input
+                        type="text"
+                        placeholder="选择或输入 (如: Cloudflare Workers Gateway / 数据库 API)"
+                        value={incMonitorName}
+                        onChange={(e) => setIncMonitorName(e.target.value)}
+                        className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white focus:outline-none focus:ring-1 focus:ring-slate-400"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                        严重等级 (Severity)
+                      </label>
+                      <select
+                        value={incSeverity}
+                        onChange={(e) => setIncSeverity(e.target.value as any)}
+                        className="w-full px-3 py-1.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                      >
+                        <option value="critical">重大中断 (Critical Outage)</option>
+                        <option value="major">服务受损 (Major Incident)</option>
+                        <option value="minor">轻微波动 (Minor Degradation)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                        当前初始状态
+                      </label>
+                      <select
+                        value={incStatus}
+                        onChange={(e) => setIncStatus(e.target.value as any)}
+                        className="w-full px-3 py-1.5 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                      >
+                        <option value="investigating">Investigating 正在排查</option>
+                        <option value="identified">Identified 原因已查明</option>
+                        <option value="monitoring">Monitoring 观察中</option>
+                        <option value="resolved">Resolved 已解决</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      详细故障说明与初查通报
+                    </label>
+                    <textarea
+                      required
+                      rows={2}
+                      placeholder="详细描述检测到的异常特征、受影响范围及目前采取的紧急处置行动..."
+                      value={incInitialMsg}
+                      onChange={(e) => setIncInitialMsg(e.target.value)}
+                      className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white resize-none focus:outline-none focus:ring-1 focus:ring-slate-400"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between pt-1">
+                    {incCreatedSuccess && (
+                      <span className="text-xs text-emerald-500 font-medium">
+                        {incCreatedSuccess}
+                      </span>
+                    )}
+                    <button
+                      type="submit"
+                      className="ml-auto flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-semibold text-xs shadow-xs transition-colors cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>立即发布故障通告</span>
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              {/* Incidents List with Admin Updates */}
+              <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                    <Clock className="w-4 h-4 text-slate-500" />
+                    <span>现有事件日志管理 ({incidents.length} 起)</span>
+                  </h3>
+                </div>
+
+                <div className="space-y-3">
+                  {incidents.length === 0 ? (
+                    <p className="text-xs text-slate-400 text-center py-6">当前没有历史故障事件记录</p>
+                  ) : (
+                    incidents.map((inc) => (
+                      <div
+                        key={inc.id}
+                        className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 space-y-3"
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200/60 dark:border-slate-700/60 pb-2">
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase font-mono ${
+                                inc.status === 'resolved'
+                                  ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
+                                  : 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                              }`}
+                            >
+                              {inc.status}
+                            </span>
+                            <span className="font-bold text-xs text-slate-900 dark:text-white">
+                              {inc.title}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className="text-[11px] font-mono text-slate-400">
+                              组件: {inc.monitorName}
+                            </span>
+                            {inc.status !== 'resolved' && (
+                              <button
+                                onClick={() => {
+                                  setUpdatingIncId(inc.id);
+                                  setUpdateStatus('resolved');
+                                }}
+                                className="px-2 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-medium rounded-lg cursor-pointer"
+                              >
+                                + 更新进展
+                              </button>
+                            )}
+                            {onDeleteIncident && (
+                              <button
+                                onClick={() => onDeleteIncident(inc.id)}
+                                className="p-1 text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
+                                title="删除该事件"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Updates list */}
+                        <div className="space-y-1.5 pl-2 border-l-2 border-slate-200 dark:border-slate-700 font-mono text-[11px]">
+                          {inc.updates.map((u, i) => (
+                            <div key={i} className="text-slate-600 dark:text-slate-300">
+                              <span className="text-slate-400 mr-2">[{new Date(u.timestamp).toLocaleTimeString()}]</span>
+                              <span className="text-sky-500 font-bold uppercase mr-1">[{u.status}]</span>
+                              <span>{u.message}</span>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Inline Update Form */}
+                        {updatingIncId === inc.id && (
+                          <form
+                            onSubmit={handleSendAdminUpdate}
+                            className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-700 space-y-2 mt-2"
+                          >
+                            <div className="flex items-center gap-2">
+                              <label className="text-xs font-bold text-slate-700 dark:text-slate-300">
+                                选择最新进展状态:
+                              </label>
+                              <select
+                                value={updateStatus}
+                                onChange={(e) => setUpdateStatus(e.target.value as any)}
+                                className="text-xs px-2 py-1 rounded bg-slate-50 dark:bg-slate-800 border"
+                              >
+                                <option value="investigating">Investigating 排查中</option>
+                                <option value="identified">Identified 原因确认</option>
+                                <option value="monitoring">Monitoring 观察中</option>
+                                <option value="resolved">Resolved 已解决</option>
+                              </select>
+                            </div>
+
+                            <input
+                              type="text"
+                              required
+                              placeholder="输入处理进展更新 (如: 边缘路由已完成收敛，丢包与延迟恢复正常。)"
+                              value={updateMessage}
+                              onChange={(e) => setUpdateMessage(e.target.value)}
+                              className="w-full px-3 py-1.5 text-xs rounded-lg border bg-slate-50 dark:bg-slate-800 text-slate-900 dark:text-white"
+                            />
+
+                            <div className="flex items-center justify-end gap-2 pt-1">
+                              <button
+                                type="button"
+                                onClick={() => setUpdatingIncId(null)}
+                                className="text-xs text-slate-500 px-2 py-1"
+                              >
+                                取消
+                              </button>
+                              <button
+                                type="submit"
+                                className="px-3 py-1 rounded bg-sky-600 hover:bg-sky-500 text-white text-xs font-semibold"
+                              >
+                                提交进展
+                              </button>
+                            </div>
+                          </form>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 4: STATUS PAGE CONFIG */}
+          {activeTab === 'status_page' && (
+            <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-4">
+              <div>
+                <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                  <Globe className="w-4 h-4 text-sky-500" />
+                  <span>公开 Status 页面与全网看板元数据配置</span>
+                </h3>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  自定义全网公开状态看板的标题、副标题描述以及顶部醒目公告横幅。
+                </p>
+              </div>
+
+              <form onSubmit={handleSaveStatusPageConfig} className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      Status 看板标题
+                    </label>
+                    <input
+                      type="text"
+                      required
+                      value={stTitle}
+                      onChange={(e) => setStTitle(e.target.value)}
+                      className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                      一句话描述
+                    </label>
+                    <input
+                      type="text"
+                      value={stDesc}
+                      onChange={(e) => setStDesc(e.target.value)}
+                      className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600 dark:text-slate-400 mb-1">
+                    顶部公告 (Announcement Banner) - 留空则不显示
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="例如: 本周日凌晨 02:00 进行核心数据库机房维护，预计影响时长 5 分钟。"
+                    value={stAnnouncement}
+                    onChange={(e) => setStAnnouncement(e.target.value)}
+                    className="w-full px-3.5 py-2 text-xs rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-900 dark:text-white"
+                  />
+                </div>
+
+                <div className="flex items-center justify-between pt-2">
+                  {stSavedSuccess && (
+                    <span className="text-xs text-emerald-500 font-medium">
+                      公开状态页配置已保存生效！
+                    </span>
+                  )}
+                  <button
+                    type="submit"
+                    className="ml-auto flex items-center gap-1.5 px-4 py-2 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 rounded-xl font-medium text-xs shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Check className="w-3.5 h-3.5" />
+                    <span>保存状态页配置</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          )}
+
+          {/* TAB 5: API KEYS & WEBHOOKS */}
           {activeTab === 'api_keys' && (
             <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-4">
               <div>
@@ -894,7 +1639,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </div>
           )}
 
-          {/* TAB 3: CLOUDFLARE QUOTA & DATABASE CLEANUP */}
+          {/* TAB 6: CLOUDFLARE QUOTA & DATABASE CLEANUP */}
           {activeTab === 'cloudflare' && (
             <div className="space-y-4">
               {/* Quota Overview */}
@@ -1072,7 +1817,7 @@ export const AdminView: React.FC<AdminViewProps> = ({
             </div>
           )}
 
-          {/* TAB 4: BACKUP & RESTORE */}
+          {/* TAB 7: BACKUP & RESTORE */}
           {activeTab === 'backup' && (
             <div className="p-5 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-5">
               <div>

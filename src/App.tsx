@@ -430,6 +430,15 @@ export function AppContent() {
     setIncidents((prev) => [newInc, ...prev]);
   };
 
+  const handleDeleteIncident = (incidentId: string) => {
+    if (!handleRequireAuth('删除故障事件记录需要管理员密码授权')) {
+      return;
+    }
+    if (confirm('确认删除该故障通告记录？')) {
+      setIncidents((prev) => prev.filter((i) => i.id !== incidentId));
+    }
+  };
+
   const handleUpdateIncidentStatus = (
     incidentId: string,
     status: 'investigating' | 'identified' | 'monitoring' | 'resolved',
@@ -560,9 +569,18 @@ export function AppContent() {
             incidents={incidents}
             globalNodes={globalNodes}
             webhooks={webhooks}
+            statusPageConfig={statusPageConfig}
+            onUpdateStatusPageConfig={(newCfg) => {
+              if (!handleRequireAuth('更新公开状态页配置需要管理员密码授权')) {
+                return;
+              }
+              setStatusPageConfig((prev) => ({ ...prev, ...newCfg }));
+            }}
+            onAddIncident={handleAddIncident}
+            onUpdateIncidentStatus={handleUpdateIncidentStatus}
+            onDeleteIncident={handleDeleteIncident}
             onImportData={handleImportData}
             onResetData={handleResetData}
-            onBackToMonitoring={() => setActiveTab('monitors')}
             initialTab={adminInitialTab}
           />
         )}

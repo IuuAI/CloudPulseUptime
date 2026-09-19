@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { GlobalNode } from '../types';
 import {
   Globe,
@@ -24,6 +24,9 @@ import {
   FileDown,
   Server,
   Lock,
+  List,
+  LayoutGrid,
+  Search,
 } from 'lucide-react';
 
 interface GlobalEdgeMapProps {
@@ -68,6 +71,26 @@ export const GlobalEdgeMap: React.FC<GlobalEdgeMapProps> = ({
 
   // Show unmasked IP temporarily (per node code) for admin inspection
   const [revealedIpCodes, setRevealedIpCodes] = useState<Record<string, boolean>>({});
+
+  // View mode state: default to 'list' as requested by user
+  const [viewMode, setViewMode] = useState<'list' | 'grid'>('list');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'operational' | 'degraded' | 'offline'>('all');
+
+  // Filtered nodes based on search and status
+  const filteredNodes = useMemo(() => {
+    return nodes.filter((n) => {
+      const matchQuery =
+        !searchQuery.trim() ||
+        n.code.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        n.city.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        n.country.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        n.region.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (n.provider && n.provider.toLowerCase().includes(searchQuery.toLowerCase()));
+      const matchStatus = statusFilter === 'all' || n.status === statusFilter;
+      return matchQuery && matchStatus;
+    });
+  }, [nodes, searchQuery, statusFilter]);
 
   // Compute aggregate stats
   const totalNodes = nodes.length;
@@ -203,13 +226,14 @@ export const GlobalEdgeMap: React.FC<GlobalEdgeMapProps> = ({
 # =========================================================
 # CloudPulse-UPtime Node Probe Daemon Agent (Linux Systemd)
 # Target Node: ${node.code} (${node.city}, ${node.country})
+# 上报频率: 60分钟一次 (3600秒)
 # =========================================================
 
 curl -fsSL ${endpoint}/install-probe.sh | sudo bash -s -- \\
   --endpoint "${endpoint}" \\
   --node-code "${node.code}" \\
   --secret "${secret}" \\
-  --interval 30 \\
+  --interval 3600 \\
   --daemon`;
     }
 
@@ -217,6 +241,7 @@ curl -fsSL ${endpoint}/install-probe.sh | sudo bash -s -- \\
       return `# =========================================================
 # CloudPulse-UPtime Node Probe Agent (Docker Container)
 # Target Node: ${node.code} (${node.city}, ${node.country})
+# 上报频率: 60分钟一次 (REPORT_INTERVAL=3600)
 # =========================================================
 
 docker run -d \\
@@ -226,22 +251,25 @@ docker run -d \\
   -e ENDPOINT="${endpoint}" \\
   -e NODE_CODE="${node.code}" \\
   -e PROBE_SECRET="${secret}" \\
-  -e REPORT_INTERVAL=30 \\
+  -e REPORT_INTERVAL=3600 \\
   cloudpulse/uptime-probe:latest`;
     }
 
     return `// =========================================================
 // Cloudflare Worker Serverless Edge POP Latency Reporter
 // Target Node: ${node.code} (${node.city})
+// Cron 触发频率: 60分钟一次 (0 * * * *)
 // =========================================================
 
 export default {
+  // Cloudflare Workers Scheduled Cron: 每60分钟执行一次 (0 * * * *)
   async scheduled(event, env, ctx) {
     const reportPayload = {
       nodeCode: '${node.code}',
       secret: '${secret}',
       timestamp: Date.now(),
       colo: event.cron || 'EDGE_POP',
+      reportIntervalMinutes: 60,
       edgeLatencyMs: 24,
       status: 'operational',
     };
@@ -285,13 +313,13 @@ export default {
   return (
     <div className="space-y-4">
       {/* Top Telemetry & Network Security Banner */}
-      <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div className="flex items-center gap-3.5">
-          <div className="p-2.5 rounded-2xl bg-sky-500/10 text-sky-500 border border-sky-500/20">
+      <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div className="flex items-start gap-3.5">
+          <div className="p-2.5 rounded-2xl bg-sky-500/10 text-sky-500 border border-sky-500/20 shrink-0">
             <Globe className="w-5 h-5 animate-pulse" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h3 className="text-sm font-bold text-slate-900 dark:text-white">
                 Cloudflare 全球分布式 Edge POPs 探针节点网络
               </h3>
@@ -301,206 +329,462 @@ export default {
               </span>
             </div>
             <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-              全球边缘多点测速，真实节点物理 IP 已自动脱敏防扫描；管理员授权后可编辑节点或部署自建探针。
+              全球边缘多点测速，真实节点物理 IP 已自动脱敏防扫描；支持列表与卡片视图，管理员授权后可编辑或部署探针。
             </p>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="flex items-center gap-2 font-mono text-xs">
-            <span className="px-3 py-1 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-semibold">
-              {operationalCount}/{totalNodes} 节点在线
+        <div className="flex items-center gap-2 shrink-0 flex-wrap">
+          <div className="flex items-center gap-1.5 font-mono text-xs">
+            <span className="px-2.5 py-1 rounded-xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 font-semibold">
+              {operationalCount}/{totalNodes} 在线
             </span>
-            <span className="hidden sm:inline px-3 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700/60">
+            <span className="hidden sm:inline px-2.5 py-1 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200/80 dark:border-slate-700/60">
               全网平均: {avgLatency} ms
             </span>
           </div>
 
+          {/* View Mode Toggle: List (Default) vs Grid */}
+          <div className="flex items-center bg-slate-100 dark:bg-slate-800 p-0.5 rounded-xl border border-slate-200/70 dark:border-slate-700/60">
+            <button
+              onClick={() => setViewMode('list')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                viewMode === 'list'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs font-semibold'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+              title="切换为列表视图"
+            >
+              <List className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">列表</span>
+            </button>
+            <button
+              onClick={() => setViewMode('grid')}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+                viewMode === 'grid'
+                  ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-2xs font-semibold'
+                  : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+              }`}
+              title="切换为卡片网格"
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">卡片</span>
+            </button>
+          </div>
+
           <button
             onClick={handleOpenCreateNode}
-            className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 shadow-xs transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 shadow-xs transition-colors cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>新建节点</span>
           </button>
-
-          {!isAdminAuthenticated && (
-            <button
-              onClick={() => onRequestAuth('解锁节点修改与自建探针管理')}
-              className="flex items-center gap-1.5 px-3 py-1 text-xs font-medium rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors cursor-pointer"
-            >
-              <Lock className="w-3.5 h-3.5 text-amber-500" />
-              <span>管理授权</span>
-            </button>
-          )}
         </div>
       </div>
 
-      {/* Global Edge Nodes Detailed Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
-        {nodes.map((node) => {
-          const isOperational = node.status === 'operational';
-          const isDegraded = node.status === 'degraded';
-          const isRevealed = revealedIpCodes[node.code];
-          const displayIp = isRevealed && node.ip ? node.ip : (node.maskedIp || '104.28.***.***');
-
-          return (
-            <div
-              key={node.code}
-              className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs hover:border-sky-500/40 transition-all flex flex-col justify-between space-y-3"
+      {/* Filter & Search Bar */}
+      <div className="flex flex-col sm:flex-row items-center justify-between gap-2.5 px-0.5">
+        {/* Search Box */}
+        <div className="relative w-full sm:w-72">
+          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="搜索节点代码、城市、国家、提供商..."
+            className="w-full pl-9 pr-8 py-1.5 text-xs rounded-xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-sky-500 transition-all"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5"
             >
-              {/* Card Header: Node Code, Flag, City, Latency */}
-              <div className="flex items-start justify-between gap-2">
-                <div className="flex items-center gap-2.5">
-                  <span className="text-2xl shrink-0 select-none">{node.flag}</span>
-                  <div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="font-bold text-xs font-mono text-slate-900 dark:text-white">
-                        {node.code}
-                      </span>
-                      <span className="text-[11px] text-slate-600 dark:text-slate-300 font-medium truncate max-w-[120px]">
-                        {node.city}
+              <X className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+
+        {/* Status Filter Tabs */}
+        <div className="flex items-center gap-1.5 w-full sm:w-auto overflow-x-auto text-xs">
+          <button
+            onClick={() => setStatusFilter('all')}
+            className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap ${
+              statusFilter === 'all'
+                ? 'bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900'
+                : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            全部 ({nodes.length})
+          </button>
+          <button
+            onClick={() => setStatusFilter('operational')}
+            className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+              statusFilter === 'operational'
+                ? 'bg-emerald-500 text-white'
+                : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            正常 ({operationalCount})
+          </button>
+          <button
+            onClick={() => setStatusFilter('degraded')}
+            className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+              statusFilter === 'degraded'
+                ? 'bg-amber-500 text-white'
+                : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+            慢速 ({nodes.filter((n) => n.status === 'degraded').length})
+          </button>
+          <button
+            onClick={() => setStatusFilter('offline')}
+            className={`px-2.5 py-1 rounded-lg font-medium transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1 ${
+              statusFilter === 'offline'
+                ? 'bg-rose-500 text-white'
+                : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800'
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-400" />
+            离线 ({nodes.filter((n) => n.status === 'offline').length})
+          </button>
+        </div>
+      </div>
+
+      {/* ======================= LIST VIEW MODE (DEFAULT) ======================= */}
+      {viewMode === 'list' && (
+        <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-2xs overflow-hidden">
+          {/* Table Header (Desktop/Tablet) */}
+          <div className="hidden lg:grid grid-cols-12 gap-3 px-5 py-3 bg-slate-50/70 dark:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800 text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
+            <div className="col-span-3">节点与地区 (POP Node)</div>
+            <div className="col-span-2">测速延迟 / 状态</div>
+            <div className="col-span-3">脱敏物理 IP / 提供商</div>
+            <div className="col-span-2">负载 (CPU / 内存)</div>
+            <div className="col-span-2 text-right">探针与操作</div>
+          </div>
+
+          {/* List Items */}
+          <div className="divide-y divide-slate-100 dark:divide-slate-800/70">
+            {filteredNodes.length === 0 ? (
+              <div className="py-12 text-center text-slate-400 text-xs">
+                没有找到符合条件的测速节点
+              </div>
+            ) : (
+              filteredNodes.map((node) => {
+                const isOperational = node.status === 'operational';
+                const isDegraded = node.status === 'degraded';
+                const isRevealed = revealedIpCodes[node.code];
+                const displayIp = isRevealed && node.ip ? node.ip : (node.maskedIp || '104.28.***.***');
+
+                return (
+                  <div
+                    key={node.code}
+                    className="p-3.5 sm:px-5 hover:bg-slate-50/60 dark:hover:bg-slate-800/30 transition-colors flex flex-col lg:grid lg:grid-cols-12 lg:items-center gap-2.5 lg:gap-3"
+                  >
+                    {/* 1. Node Info & Region */}
+                    <div className="lg:col-span-3 flex items-center gap-3">
+                      <span className="text-2xl select-none shrink-0">{node.flag}</span>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <span className="font-mono font-bold text-xs text-slate-900 dark:text-white">
+                            {node.code}
+                          </span>
+                          <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">
+                            {node.city}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-400 truncate flex items-center gap-1 mt-0.5">
+                          <span>{node.country}</span>
+                          <span>•</span>
+                          <span>{node.region}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 2. Latency & Status */}
+                    <div className="lg:col-span-2 flex items-center justify-between lg:justify-start lg:gap-3">
+                      <span className="text-[11px] text-slate-400 lg:hidden">网络延迟:</span>
+                      <div className="flex items-center gap-2 font-mono">
+                        <span
+                          className={`text-xs font-bold ${
+                            node.avgLatencyMs < 45
+                              ? 'text-emerald-500 dark:text-emerald-400'
+                              : node.avgLatencyMs < 100
+                              ? 'text-amber-500 dark:text-amber-400'
+                              : 'text-rose-500'
+                          }`}
+                        >
+                          {node.avgLatencyMs} ms
+                        </span>
+                        <span
+                          className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full font-sans font-medium ${
+                            isOperational
+                              ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20'
+                              : isDegraded
+                              ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20'
+                              : 'bg-rose-500/10 text-rose-600 dark:text-rose-400 border border-rose-500/20'
+                          }`}
+                        >
+                          {isOperational ? (
+                            <>
+                              <CheckCircle2 className="w-2.5 h-2.5" /> 正常
+                            </>
+                          ) : isDegraded ? (
+                            <>
+                              <AlertTriangle className="w-2.5 h-2.5" /> 慢速
+                            </>
+                          ) : (
+                            <>
+                              <XCircle className="w-2.5 h-2.5" /> 离线
+                            </>
+                          )}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* 3. IP & Provider */}
+                    <div className="lg:col-span-3 flex items-center justify-between lg:justify-start lg:gap-3">
+                      <span className="text-[11px] text-slate-400 lg:hidden">安全 IP:</span>
+                      <div className="text-[11px] font-mono min-w-0">
+                        <div className="flex items-center gap-1.5">
+                          <Shield className="w-3 h-3 text-emerald-500 shrink-0 hidden sm:inline" />
+                          <span className="font-semibold text-slate-700 dark:text-slate-300">
+                            {displayIp}
+                          </span>
+                          {isAdminAuthenticated && (
+                            <button
+                              type="button"
+                              onClick={() => toggleRevealIp(node.code)}
+                              className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-0.5 cursor-pointer"
+                              title={isRevealed ? '隐藏真实IP' : '查看完整真实IP (管理员特权)'}
+                            >
+                              {isRevealed ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                            </button>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-400 truncate block mt-0.5">
+                          {node.provider || 'Cloudflare Anycast POP'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* 4. CPU & Memory Telemetry */}
+                    <div className="lg:col-span-2 flex items-center justify-between lg:justify-start lg:gap-3">
+                      <span className="text-[11px] text-slate-400 lg:hidden">资源占用:</span>
+                      <div className="flex items-center gap-3 w-full lg:w-auto">
+                        <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-500">
+                          <Cpu className="w-3 h-3 text-sky-500 shrink-0" />
+                          <span className="font-medium text-slate-700 dark:text-slate-300">
+                            {node.cpuUsage || 15}%
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5 text-[11px] font-mono text-slate-500">
+                          <Activity className="w-3 h-3 text-emerald-500 shrink-0" />
+                          <span className="font-medium text-slate-700 dark:text-slate-300">
+                            {node.memUsage || 32}%
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-mono hidden xl:inline">
+                          · 运行{node.uptimeDays || 180}天
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* 5. Probe Code & Edit Buttons */}
+                    <div className="lg:col-span-2 flex items-center justify-end gap-1.5 pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-100 dark:border-slate-800">
+                      <button
+                        onClick={() => setSelectedProbeNode(node)}
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-50 dark:bg-sky-950/30 hover:bg-sky-100 dark:hover:bg-sky-900/40 text-sky-600 dark:text-sky-400 font-medium text-xs transition-colors cursor-pointer"
+                        title="查看此节点的探针一键部署代码"
+                      >
+                        <Terminal className="w-3.5 h-3.5" />
+                        <span>探针代码</span>
+                      </button>
+
+                      <button
+                        onClick={() => handleOpenEdit(node)}
+                        className={`p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer ${
+                          isAdminAuthenticated ? 'hover:text-emerald-500' : 'opacity-70'
+                        }`}
+                        title={isAdminAuthenticated ? '编辑节点信息' : '需要管理密码授权以编辑节点'}
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ======================= GRID VIEW MODE (CARDS) ======================= */}
+      {viewMode === 'grid' && (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3.5">
+          {filteredNodes.map((node) => {
+            const isOperational = node.status === 'operational';
+            const isDegraded = node.status === 'degraded';
+            const isRevealed = revealedIpCodes[node.code];
+            const displayIp = isRevealed && node.ip ? node.ip : (node.maskedIp || '104.28.***.***');
+
+            return (
+              <div
+                key={node.code}
+                className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-2xs hover:border-sky-500/40 transition-all flex flex-col justify-between space-y-3"
+              >
+                {/* Card Header: Node Code, Flag, City, Latency */}
+                <div className="flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-2xl shrink-0 select-none">{node.flag}</span>
+                    <div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-bold text-xs font-mono text-slate-900 dark:text-white">
+                          {node.code}
+                        </span>
+                        <span className="text-[11px] text-slate-600 dark:text-slate-300 font-medium truncate max-w-[120px]">
+                          {node.city}
+                        </span>
+                      </div>
+                      <span className="text-[10px] text-slate-400 block truncate">
+                        {node.country} • {node.region}
                       </span>
                     </div>
-                    <span className="text-[10px] text-slate-400 block truncate">
-                      {node.country} • {node.region}
+                  </div>
+
+                  <div className="text-right font-mono shrink-0">
+                    <span
+                      className={`text-xs font-bold block ${
+                        node.avgLatencyMs < 45
+                          ? 'text-emerald-500 dark:text-emerald-400'
+                          : node.avgLatencyMs < 100
+                          ? 'text-amber-500 dark:text-amber-400'
+                          : 'text-rose-500'
+                      }`}
+                    >
+                      {node.avgLatencyMs} ms
+                    </span>
+                    <span className="inline-flex items-center gap-0.5 text-[10px] text-emerald-500 font-sans font-medium">
+                      {isOperational ? (
+                        <>
+                          <CheckCircle2 className="w-2.5 h-2.5" /> 正常
+                        </>
+                      ) : isDegraded ? (
+                        <>
+                          <AlertTriangle className="w-2.5 h-2.5 text-amber-500" /> 慢速
+                        </>
+                      ) : (
+                        <>
+                          <XCircle className="w-2.5 h-2.5 text-rose-500" /> 离线
+                        </>
+                      )}
                     </span>
                   </div>
                 </div>
 
-                <div className="text-right font-mono shrink-0">
-                  <span
-                    className={`text-xs font-bold block ${
-                      node.avgLatencyMs < 45
-                        ? 'text-emerald-500 dark:text-emerald-400'
-                        : node.avgLatencyMs < 100
-                        ? 'text-amber-500 dark:text-amber-400'
-                        : 'text-rose-500'
-                    }`}
-                  >
-                    {node.avgLatencyMs} ms
-                  </span>
-                  <span className="inline-flex items-center gap-0.5 text-[10px] text-emerald-500 font-sans font-medium">
-                    {isOperational ? (
-                      <>
-                        <CheckCircle2 className="w-2.5 h-2.5" /> 正常
-                      </>
-                    ) : isDegraded ? (
-                      <>
-                        <AlertTriangle className="w-2.5 h-2.5 text-amber-500" /> 慢速
-                      </>
-                    ) : (
-                      <>
-                        <XCircle className="w-2.5 h-2.5 text-rose-500" /> 离线
-                      </>
-                    )}
-                  </span>
+                {/* Masked IP & Security Info */}
+                <div className="p-2.5 rounded-xl bg-slate-50/80 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 space-y-1.5 text-[11px]">
+                  <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 font-mono">
+                    <span className="flex items-center gap-1 text-[10px]">
+                      <Shield className="w-3 h-3 text-emerald-500 shrink-0" />
+                      <span>节点 IP (脱敏保护):</span>
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">
+                        {displayIp}
+                      </span>
+                      {isAdminAuthenticated && (
+                        <button
+                          type="button"
+                          onClick={() => toggleRevealIp(node.code)}
+                          className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-0.5 cursor-pointer"
+                          title={isRevealed ? '隐藏真实IP' : '查看完整真实IP (管理员特权)'}
+                        >
+                          {isRevealed ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between text-[10px] text-slate-400">
+                    <span className="truncate max-w-[160px]">
+                      {node.provider || 'Cloudflare Anycast POP'}
+                    </span>
+                    <span className="font-mono">版本: {node.probeVersion || 'v1.5.2'}</span>
+                  </div>
+                </div>
+
+                {/* Hardware & Telemetry Bar: CPU & Mem */}
+                <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-slate-500">
+                  <div className="p-2 rounded-lg bg-slate-50/60 dark:bg-slate-800/30 border border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="flex items-center gap-1 text-slate-400 font-sans">
+                        <Cpu className="w-3 h-3 text-sky-500" /> CPU
+                      </span>
+                      <span className="font-bold text-slate-700 dark:text-slate-300">
+                        {node.cpuUsage || 15}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-200 dark:bg-slate-700 h-1 rounded-full overflow-hidden">
+                      <div
+                        className="bg-sky-500 h-full rounded-full"
+                        style={{ width: `${node.cpuUsage || 15}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="p-2 rounded-lg bg-slate-50/60 dark:bg-slate-800/30 border border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="flex items-center gap-1 text-slate-400 font-sans">
+                        <Activity className="w-3 h-3 text-emerald-500" /> 内存
+                      </span>
+                      <span className="font-bold text-slate-700 dark:text-slate-300">
+                        {node.memUsage || 32}%
+                      </span>
+                    </div>
+                    <div className="w-full bg-slate-200 dark:bg-slate-700 h-1 rounded-full overflow-hidden">
+                      <div
+                        className="bg-emerald-500 h-full rounded-full"
+                        style={{ width: `${node.memUsage || 32}%` }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Node Uptime & Action Buttons */}
+                <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                  <div className="flex items-center gap-1 text-[10px] text-slate-400 font-mono">
+                    <Clock className="w-3 h-3 text-slate-400" />
+                    <span>连续运行 {node.uptimeDays || 180} 天</span>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => setSelectedProbeNode(node)}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-50 dark:bg-sky-950/30 hover:bg-sky-100 dark:hover:bg-sky-900/40 text-sky-600 dark:text-sky-400 font-medium text-[11px] transition-colors cursor-pointer"
+                      title="查看此节点的探针一键部署代码"
+                    >
+                      <Terminal className="w-3 h-3" />
+                      <span>探针代码</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleOpenEdit(node)}
+                      className={`p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer ${
+                        isAdminAuthenticated ? 'hover:text-emerald-500' : 'opacity-70'
+                      }`}
+                      title={isAdminAuthenticated ? '编辑节点信息' : '需要管理密码授权以编辑节点'}
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               </div>
-
-              {/* Masked IP & Security Info */}
-              <div className="p-2.5 rounded-xl bg-slate-50/80 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 space-y-1.5 text-[11px]">
-                <div className="flex items-center justify-between text-slate-500 dark:text-slate-400 font-mono">
-                  <span className="flex items-center gap-1 text-[10px]">
-                    <Shield className="w-3 h-3 text-emerald-500 shrink-0" />
-                    <span>节点 IP (脱敏保护):</span>
-                  </span>
-                  <div className="flex items-center gap-1">
-                    <span className="font-semibold text-slate-800 dark:text-slate-200">
-                      {displayIp}
-                    </span>
-                    {isAdminAuthenticated && (
-                      <button
-                        type="button"
-                        onClick={() => toggleRevealIp(node.code)}
-                        className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 p-0.5 cursor-pointer"
-                        title={isRevealed ? '隐藏真实IP' : '查看完整真实IP (管理员特权)'}
-                      >
-                        {isRevealed ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-between text-[10px] text-slate-400">
-                  <span className="truncate max-w-[160px]">
-                    {node.provider || 'Cloudflare Anycast POP'}
-                  </span>
-                  <span className="font-mono">版本: {node.probeVersion || 'v1.5.2'}</span>
-                </div>
-              </div>
-
-              {/* Hardware & Telemetry Bar: CPU & Mem */}
-              <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-slate-500">
-                <div className="p-2 rounded-lg bg-slate-50/60 dark:bg-slate-800/30 border border-slate-100 dark:border-slate-800">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="flex items-center gap-1 text-slate-400 font-sans">
-                      <Cpu className="w-3 h-3 text-sky-500" /> CPU
-                    </span>
-                    <span className="font-bold text-slate-700 dark:text-slate-300">
-                      {node.cpuUsage || 15}%
-                    </span>
-                  </div>
-                  <div className="w-full bg-slate-200 dark:bg-slate-700 h-1 rounded-full overflow-hidden">
-                    <div
-                      className="bg-sky-500 h-full rounded-full"
-                      style={{ width: `${node.cpuUsage || 15}%` }}
-                    />
-                  </div>
-                </div>
-
-                <div className="p-2 rounded-lg bg-slate-50/60 dark:bg-slate-800/30 border border-slate-100 dark:border-slate-800">
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="flex items-center gap-1 text-slate-400 font-sans">
-                      <Activity className="w-3 h-3 text-emerald-500" /> 内存
-                    </span>
-                    <span className="font-bold text-slate-700 dark:text-slate-300">
-                      {node.memUsage || 32}%
-                    </span>
-                  </div>
-                  <div className="w-full bg-slate-200 dark:bg-slate-700 h-1 rounded-full overflow-hidden">
-                    <div
-                      className="bg-emerald-500 h-full rounded-full"
-                      style={{ width: `${node.memUsage || 32}%` }}
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Node Uptime & Action Buttons */}
-              <div className="pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                <div className="flex items-center gap-1 text-[10px] text-slate-400 font-mono">
-                  <Clock className="w-3 h-3 text-slate-400" />
-                  <span>连续运行 {node.uptimeDays || 180} 天</span>
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  {/* View Probe Code Button */}
-                  <button
-                    onClick={() => setSelectedProbeNode(node)}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-sky-50 dark:bg-sky-950/30 hover:bg-sky-100 dark:hover:bg-sky-900/40 text-sky-600 dark:text-sky-400 font-medium text-[11px] transition-colors cursor-pointer"
-                    title="查看此节点的探针一键部署代码"
-                  >
-                    <Terminal className="w-3 h-3" />
-                    <span>探针代码</span>
-                  </button>
-
-                  {/* Edit Node Info (Requires Admin Auth) */}
-                  <button
-                    onClick={() => handleOpenEdit(node)}
-                    className={`p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer ${
-                      isAdminAuthenticated ? 'hover:text-emerald-500' : 'opacity-70'
-                    }`}
-                    title={isAdminAuthenticated ? '编辑节点信息' : '需要管理密码授权以编辑节点'}
-                  >
-                    <Edit2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* PROBE CODE DRAWER / MODAL */}
       {selectedProbeNode && (

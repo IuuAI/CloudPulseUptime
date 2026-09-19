@@ -163,3 +163,17 @@ export interface DatabaseCleanupConfig {
   cleanedRowsCount?: number;
 }
 
+export interface AiAutoIncidentRuleConfig {
+  enabled: boolean;
+  minDownCount: number; // 触发宕机站点数 (例如 >= 1)
+  latencyThresholdMs: number; // 触发异常高延迟阈值 (例如 >= 500ms)
+  offlineNodeRatioPct: number; // 节点离线占比阈值 (例如 >= 25%)
+  autoPublishSeverity: 'auto_ai' | 'critical' | 'major' | 'minor';
+  requireApproval: boolean; // 是否需要管理员人工审批再公开
+  notifyTelegram: boolean; // 是否同步发送 Telegram 告警
+  notifyWebhooks: boolean; // 是否同步触发通用 Webhook
+  customAiInstruction?: string; // 自定义 AI 诊断指导指令
+  lastEvaluatedAt?: number;
+  lastGeneratedIncidentId?: string;
+}
+

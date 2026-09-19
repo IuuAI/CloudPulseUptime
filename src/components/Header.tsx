@@ -122,26 +122,26 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="hidden sm:inline whitespace-nowrap leading-none">AI 诊断</span>
             </button>
 
-            {/* Admin Management Portal Button (Full-screen Responsive Page Trigger) */}
+            {/* Admin Management Portal Button (Icon-Only Header Entry) */}
             <button
               onClick={onOpenAdmin}
-              className={`h-8 flex items-center gap-1 px-2.5 rounded-lg text-xs font-medium border transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+              className={`w-8 h-8 flex items-center justify-center rounded-lg text-xs font-medium border transition-all shrink-0 cursor-pointer ${
                 activeTab === 'admin'
-                  ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900 border-slate-900 dark:border-white shadow-xs font-semibold'
+                  ? 'bg-slate-900 text-white dark:bg-white dark:text-slate-900 border-slate-900 dark:border-white shadow-xs'
                   : isAdminAuthenticated
                   ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-500/30 hover:bg-emerald-100 dark:hover:bg-emerald-900/40'
                   : hasAdminPassword
                   ? 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-500/30 hover:bg-amber-100 dark:hover:bg-amber-900/40'
                   : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-700 hover:bg-slate-200 dark:hover:bg-slate-700'
               }`}
-              title="进入后台管理与数据控制中心"
+              title="后台管理"
+              aria-label="后台管理"
             >
               {hasAdminPassword && !isAdminAuthenticated ? (
-                <Lock className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                <Lock className="w-4 h-4 text-amber-500" />
               ) : (
-                <Sliders className="w-3.5 h-3.5 shrink-0" />
+                <Sliders className="w-4 h-4" />
               )}
-              <span className="whitespace-nowrap leading-none">后台管理</span>
             </button>
 
             {/* Theme Selector Button */}

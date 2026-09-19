@@ -324,6 +324,89 @@ async function startServer() {
     }
   });
 
+  // AI Automated Incident Generation & Evaluation API
+  app.post('/api/ai-auto-incident', async (req, res) => {
+    try {
+      const { monitors = [], globalNodes = [], rules = {}, apiKey } = req.body;
+
+      const ai = getGeminiClient(apiKey);
+
+      const downMonitors = monitors.filter((m: any) => m.status === 'down');
+      const degradedMonitors = monitors.filter((m: any) => m.status === 'degraded' || (m.avgLatencyMs && m.avgLatencyMs >= (rules.latencyThresholdMs || 500)));
+      const offlineNodes = globalNodes.filter((n: any) => n.status === 'offline');
+      const offlineNodeRatio = globalNodes.length > 0 ? (offlineNodes.length / globalNodes.length) * 100 : 0;
+
+      const minDownCount = rules.minDownCount ?? 1;
+      const latencyThresholdMs = rules.latencyThresholdMs ?? 500;
+      const offlineNodeRatioPct = rules.offlineNodeRatioPct ?? 25;
+
+      const isConditionMet =
+        downMonitors.length >= minDownCount ||
+        degradedMonitors.length > 0 ||
+        offlineNodeRatio >= offlineNodeRatioPct;
+
+      const prompt = `你是一位顶尖的 Cloudflare 边缘计算与网络全栈运维专家兼应急响应指挥官。
+你正在运行 CloudPulse-UPtime 系统的 AI 智能自动故障研判引擎。
+请分析以下站点的实时监控状态、边缘节点指标与自动化规则，研判是否需要发布故障事件通告（Incident），并生成规范的故障通告内容。
+
+【当前监控与节点运行数据】
+- 监控项总数: ${monitors.length}
+- 发生故障（Down）监控项 (${downMonitors.length}个): ${JSON.stringify(downMonitors.map((m: any) => ({ id: m.id, name: m.name, url: m.url, status: m.status, latency: m.avgLatencyMs })))}
+- 响应高/性能降级监控项 (${degradedMonitors.length}个): ${JSON.stringify(degradedMonitors.map((m: any) => ({ id: m.id, name: m.name, url: m.url, avgLatencyMs: m.avgLatencyMs })))}
+- 全球边缘 POP 节点总数: ${globalNodes.length}，离线节点数: ${offlineNodes.length} (${offlineNodeRatio.toFixed(1)}%)
+- 离线/异常节点: ${JSON.stringify(offlineNodes.map((n: any) => ({ code: n.code, city: n.city, region: n.region })))}
+
+【后台设定的 AI 触发条件】
+- 宕机站点触发阈值: >= ${minDownCount} 个站点
+- 延迟异常判定阈值: >= ${latencyThresholdMs} ms
+- 边缘节点离线占比阈值: >= ${offlineNodeRatioPct}%
+- 指定严重等级偏好: ${rules.autoPublishSeverity || 'auto_ai'}
+- 自定义指导指令: ${rules.customAiInstruction || '无特殊指令，按照生产级 SLA 标准规范生成'}
+
+【输出要求】
+请直接输出 JSON 格式（无需额外 markdown 标记），结构严格如下：
+{
+  "triggered": boolean (是否达到发布条件),
+  "triggerReason": "判定触发或未触发的具体原因简述",
+  "incident": {
+    "title": "通告标题 (例: [自动研判] Cloudflare Worker Gateway 响应超时及部分区域路由波动)",
+    "monitorId": "受影响主要监控项 ID (如 'mon-1' 或 'global')",
+    "monitorName": "受影响服务或组件名称 (如 'Cloudflare Worker Gateway API' 或 '全球多地域边缘网络')",
+    "severity": "critical" | "major" | "minor",
+    "status": "investigating",
+    "summary": "一句精炼的故障影响范围概括",
+    "initialMessage": "发布在状态页上的第一条排查进展通报（包含检测到的现象、初步归因推测与运维团队响应动作）",
+    "rootCauseHypothesis": "可能的核心故障根因推测",
+    "recommendedActions": ["紧急处置步骤 1", "处置步骤 2"]
+  }
+}
+`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+        },
+      });
+
+      const jsonText = response.text || '{}';
+      const parsedData = JSON.parse(jsonText);
+
+      return res.json({
+        success: true,
+        isConditionMet,
+        evaluation: parsedData,
+        timestamp: Date.now(),
+      });
+    } catch (error: any) {
+      console.error('AI Auto Incident Evaluation Error:', error);
+      return res.status(500).json({
+        error: error.message || 'Failed to evaluate auto incident trigger with AI.',
+      });
+    }
+  });
+
   // Vite development middleware vs production static server
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
