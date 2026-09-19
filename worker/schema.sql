@@ -125,3 +125,26 @@ CREATE TABLE IF NOT EXISTS system_config (
   value TEXT NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+-- 9. 监控每日聚合历史统计表 (Daily Aggregated SLA Stats)
+CREATE TABLE IF NOT EXISTS monitor_daily_stats (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  monitor_id TEXT NOT NULL,
+  date TEXT NOT NULL, -- 'YYYY-MM-DD'
+  uptime_percentage REAL NOT NULL DEFAULT 100.0,
+  avg_latency_ms INTEGER NOT NULL DEFAULT 0,
+  total_checks INTEGER NOT NULL DEFAULT 0,
+  failed_checks INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (monitor_id) REFERENCES monitors(id) ON DELETE CASCADE,
+  UNIQUE(monitor_id, date)
+);
+CREATE INDEX IF NOT EXISTS idx_daily_stats_mon_date ON monitor_daily_stats(monitor_id, date DESC);
+
+-- 10. 管理员 Edge 会话 Token 表 (Worker Admin Sessions)
+CREATE TABLE IF NOT EXISTS admin_sessions (
+  token TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON admin_sessions(expires_at);
