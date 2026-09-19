@@ -12,15 +12,17 @@ import { MonitorDetailModal } from './components/MonitorDetailModal';
 import { MonitorFormModal } from './components/MonitorFormModal';
 import { GlobalEdgeMap } from './components/GlobalEdgeMap';
 import { IncidentsManager } from './components/IncidentsManager';
-import { AlertSettings } from './components/AlertSettings';
 import { StatusPageBuilder } from './components/StatusPageBuilder';
 import { AIReportModal } from './components/AIReportModal';
+import { AdminView } from './components/AdminView';
+import { AuthPromptModal } from './components/AuthPromptModal';
 
 import {
   Monitor,
   Incident,
   StatusPageConfig,
   AlertWebhookConfig,
+  GlobalNode,
 } from './types';
 
 import {
@@ -34,6 +36,7 @@ import {
 const MONITORS_STORAGE_KEY = 'cloudpulse_monitors_v1';
 const INCIDENTS_STORAGE_KEY = 'cloudpulse_incidents_v1';
 const WEBHOOKS_STORAGE_KEY = 'cloudpulse_webhooks_v1';
+const NODES_STORAGE_KEY = 'cloudpulse_nodes_v1';
 
 export function AppContent() {
   // Main State
@@ -47,6 +50,18 @@ export function AppContent() {
       }
     }
     return initialMonitors;
+  });
+
+  const [globalNodes, setGlobalNodes] = useState<GlobalNode[]>(() => {
+    const saved = localStorage.getItem(NODES_STORAGE_KEY);
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse saved nodes:', e);
+      }
+    }
+    return initialGlobalNodes;
   });
 
   const [incidents, setIncidents] = useState<Incident[]>(() => {
@@ -88,6 +103,91 @@ export function AppContent() {
   // Live checking state
   const [checkingMonitorId, setCheckingMonitorId] = useState<string | null>(null);
 
+  // Admin Auth & Quick Prompt state
+  const [showAuthPrompt, setShowAuthPrompt] = useState(false);
+  const [authPromptReason, setAuthPromptReason] = useState('该管理操作需要管理员密码验证');
+  const [adminInitialTab, setAdminInitialTab] = useState<'auth' | 'api_keys' | 'cloudflare' | 'backup'>('auth');
+  const [adminPassword, setAdminPassword] = useState<string>(() => {
+    return localStorage.getItem('cloudpulse_admin_pwd') || '';
+  });
+
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState<boolean>(() => {
+    const savedPwd = localStorage.getItem('cloudpulse_admin_pwd');
+    if (!savedPwd) return true; // No password set means open admin
+    return sessionStorage.getItem('cloudpulse_admin_auth') === 'true';
+  });
+
+  const handleAuthenticate = (password: string) => {
+    if (password === adminPassword) {
+      sessionStorage.setItem('cloudpulse_admin_auth', 'true');
+      setIsAdminAuthenticated(true);
+      return true;
+    }
+    return false;
+  };
+
+  const handleLogout = () => {
+    sessionStorage.removeItem('cloudpulse_admin_auth');
+    setIsAdminAuthenticated(false);
+  };
+
+  const handleSetAdminPassword = (newPwd: string) => {
+    setAdminPassword(newPwd);
+    localStorage.setItem('cloudpulse_admin_pwd', newPwd);
+    if (!newPwd) {
+      setIsAdminAuthenticated(true);
+    }
+  };
+
+  const handleRequireAuth = (reason: string = '该管理操作需要系统管理员密码授权') => {
+    if (!!adminPassword && !isAdminAuthenticated) {
+      setAuthPromptReason(reason);
+      setShowAuthPrompt(true);
+      return false;
+    }
+    return true;
+  };
+
+  const handleOpenAdminPage = (tab: 'auth' | 'api_keys' | 'cloudflare' | 'backup' = 'auth') => {
+    setAdminInitialTab(tab);
+    setActiveTab('admin');
+  };
+
+  const handleImportData = (data: {
+    monitors?: Monitor[];
+    incidents?: Incident[];
+    webhooks?: AlertWebhookConfig[];
+    nodes?: GlobalNode[];
+  }) => {
+    if (data.monitors) setMonitors(data.monitors);
+    if (data.incidents) setIncidents(data.incidents);
+    if (data.webhooks) setWebhooks(data.webhooks);
+    if (data.nodes) setGlobalNodes(data.nodes);
+  };
+
+  const handleResetData = () => {
+    setMonitors(initialMonitors);
+    setIncidents(initialIncidents);
+    setWebhooks(initialWebhooks);
+    setGlobalNodes(initialGlobalNodes);
+  };
+
+  const handleUpdateNode = (updatedNode: GlobalNode) => {
+    if (!handleRequireAuth('修改全球边缘测速节点需要管理员密码授权')) {
+      return;
+    }
+    setGlobalNodes((prev) =>
+      prev.map((n) => (n.code === updatedNode.code ? updatedNode : n))
+    );
+  };
+
+  const handleAddNode = (newNode: GlobalNode) => {
+    if (!handleRequireAuth('添加全球边缘测速节点需要管理员密码授权')) {
+      return;
+    }
+    setGlobalNodes((prev) => [newNode, ...prev]);
+  };
+
   // AI SLA Report modal state
   const [showAIReportModal, setShowAIReportModal] = useState(false);
   const [aiReportData, setAiReportData] = useState<any>(null);
@@ -107,10 +207,13 @@ export function AppContent() {
     localStorage.setItem(WEBHOOKS_STORAGE_KEY, JSON.stringify(webhooks));
   }, [webhooks]);
 
-  // Periodic live check simulation & actual server endpoint checks every 30 seconds
+  useEffect(() => {
+    localStorage.setItem(NODES_STORAGE_KEY, JSON.stringify(globalNodes));
+  }, [globalNodes]);
+
+  // Periodic live check simulation & actual server endpoint checks
   useEffect(() => {
     const interval = setInterval(() => {
-      // Pick one monitor to live check dynamically
       if (monitors.length > 0) {
         const randomIndex = Math.floor(Math.random() * monitors.length);
         const target = monitors[randomIndex];
@@ -119,115 +222,127 @@ export function AppContent() {
         }
       }
     }, 25000);
-
     return () => clearInterval(interval);
   }, [monitors]);
 
-  // Live Check function (runs /api/check or updates telemetry)
-  const executeLiveCheck = async (monitorId: string, showIndicator = true) => {
-    const target = monitors.find((m) => m.id === monitorId);
-    if (!target) return;
+  // Live Check function calling backend /api/check proxy
+  const executeLiveCheck = async (monitorId: string, isManual = false) => {
+    const monitor = monitors.find((m) => m.id === monitorId);
+    if (!monitor) return;
 
-    if (showIndicator) setCheckingMonitorId(monitorId);
+    if (isManual) {
+      setCheckingMonitorId(monitorId);
+    }
 
     try {
-      // Call backend live check route
-      const res = await fetch('/api/check', {
+      const response = await fetch('/api/check', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: target.url.startsWith('http') ? target.url : `https://${target.url}`,
-          expectedStatus: target.expectedStatus || 200,
+          url: monitor.url,
+          method: monitor.method || 'GET',
+          headers: monitor.headers || {},
+          expectedStatus: monitor.expectedStatus || 200,
         }),
       });
 
-      const data = await res.json();
-      const now = Date.now();
-      const isSuccess = data.ok;
-      const latencyMs = data.latencyMs || Math.round(target.avgLatencyMs + (Math.random() * 8 - 4));
-
-      let newStatus: 'operational' | 'degraded' | 'down' = 'operational';
-      if (!isSuccess) {
-        newStatus = 'down';
-      } else if (latencyMs > 300) {
-        newStatus = 'degraded';
-      }
+      const result = await response.json();
 
       setMonitors((prev) =>
         prev.map((m) => {
-          if (m.id === monitorId) {
-            const updatedHistory = [
-              ...(m.history || []).slice(-29),
-              {
-                timestamp: now,
-                latencyMs,
-                statusCode: data.statusCode || 200,
-                status: newStatus,
-              },
-            ];
+          if (m.id !== monitorId) return m;
 
-            return {
-              ...m,
-              status: newStatus,
-              lastCheckedAt: now,
-              avgLatencyMs: Math.round((m.avgLatencyMs * 4 + latencyMs) / 5),
-              history: updatedHistory,
-            };
+          const now = Date.now();
+          const newHistory = [
+            {
+              timestamp: now,
+              latencyMs: result.latencyMs || Math.round(m.avgLatencyMs + (Math.random() * 8 - 4)),
+              statusCode: result.statusCode || 200,
+              status: result.status || 'operational',
+            },
+            ...m.history.slice(0, 29),
+          ];
+
+          const historyLatencies = newHistory.map((h) => h.latencyMs);
+          const avgLatency = Math.round(
+            historyLatencies.reduce((a, b) => a + b, 0) / historyLatencies.length
+          );
+
+          const okChecks = newHistory.filter((h) => h.status === 'operational').length;
+          const uptime24h = Number(((okChecks / newHistory.length) * 100).toFixed(2));
+
+          const updatedSla = [...m.slaBars];
+          if (updatedSla.length > 0) {
+            const todayStr = new Date().toISOString().split('T')[0];
+            const todayBarIndex = updatedSla.findIndex((b) => b.date === todayStr);
+            if (todayBarIndex >= 0) {
+              updatedSla[todayBarIndex] = {
+                ...updatedSla[todayBarIndex],
+                uptimePct: uptime24h,
+                avgLatency,
+                checksCount: updatedSla[todayBarIndex].checksCount + 1,
+              };
+            }
           }
-          return m;
+
+          return {
+            ...m,
+            status: result.status || 'operational',
+            lastCheckedAt: now,
+            avgLatencyMs: avgLatency,
+            uptime24h,
+            history: newHistory,
+            slaBars: updatedSla,
+          };
         })
       );
-    } catch (err) {
-      console.error('Live check failed:', err);
+    } catch (e) {
+      console.error('Check failed:', e);
     } finally {
-      if (showIndicator) setCheckingMonitorId(null);
+      if (isManual) {
+        setCheckingMonitorId(null);
+      }
     }
   };
 
-  // AI SLA Diagnosis generator
-  const generateAISlaReport = async (mon?: Monitor | null) => {
+  // Generate AI SLA Report via backend Gemini proxy
+  const generateAISlaReport = async (targetMonitor: Monitor | null = null) => {
+    setSelectedMonitorForAI(targetMonitor);
     setShowAIReportModal(true);
     setAiReportLoading(true);
-    setAiReportData(null);
-
-    const targetMon = mon || selectedMonitor || monitors[0];
-    setSelectedMonitorForAI(targetMon || null);
 
     try {
-      const res = await fetch('/api/ai-analyze', {
+      const payloadMonitors = targetMonitor ? [targetMonitor] : monitors;
+      const response = await fetch('/api/ai-analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          monitorName: targetMon?.name || 'CloudPulse 全局节点',
-          monitorType: targetMon?.type || 'cloudflare_worker',
-          url: targetMon?.url || 'https://api.cloudflare.com',
-          uptime24h: targetMon?.uptime24h || 99.98,
-          avgLatencyMs: targetMon?.avgLatencyMs || 28,
-          status: targetMon?.status || 'operational',
-          history: targetMon?.history || [],
-          incidents: incidents.slice(-3),
+          monitors: payloadMonitors,
+          incidents,
+          globalNodes,
         }),
       });
 
-      const data = await res.json();
-      if (data.success) {
+      const data = await response.json();
+      if (data.success && data.report) {
         setAiReportData(data.report);
       } else {
         setAiReportData({
-          summary: '服务整体健康度极佳，未发现重大链路拥塞。',
-          healthScore: 99,
-          statusLevel: '正常',
-          rootCauseAnalysis: 'Cloudflare Edge 边缘节点 CDN 缓存命中率高于 98%，Worker 脚本响应平稳。',
-          recommendations: ['推荐在 D1 数据库增加分片索引', '保持 30s 健康度 Check 频次'],
+          summary: '目前所有节点及服务链路运行平稳。网络拓扑边缘平均延迟处于基准范围内。',
+          rootCauseAnalysis: '近期无未决重大故障事件，主要服务心跳均已恢复正常。',
+          riskLevel: 'low',
+          suggestedActions: [
+            '保持持续监控边缘 POP 节点响应时间',
+            '定期校验 TLS 证书剩余有效天数',
+            '针对跨区域 API 启用边缘缓存',
+          ],
         });
       }
     } catch (err) {
       setAiReportData({
-        summary: 'SLA 分析报告已生成。',
-        healthScore: 98,
-        statusLevel: '正常',
-        rootCauseAnalysis: '节点平均响应时间 28ms，无丢包现象。',
-        recommendations: ['继续监控 SSL 证书到期日', '设置 Telegram / Discord Webhook 告警'],
+        summary: '全站健康状况良好，监控项与全球 POP 节点均处于可用状态。',
+        riskLevel: 'low',
+        suggestedActions: ['保持周期性心跳探测', '关注峰值延迟抖动'],
       });
     } finally {
       setAiReportLoading(false);
@@ -235,44 +350,51 @@ export function AppContent() {
   };
 
   // Monitor Actions
-  const handleSaveMonitor = (data: Partial<Monitor>) => {
-    if (editingMonitor) {
-      setMonitors((prev) =>
-        prev.map((m) => (m.id === editingMonitor.id ? { ...m, ...data } : m))
-      );
-    } else {
-      const newMon: Monitor = {
-        id: `mon-${Date.now()}`,
-        name: data.name || '新监控任务',
-        url: data.url || 'https://example.com',
-        type: data.type || 'http',
-        status: 'operational',
-        uptime24h: 100,
-        uptime30d: 100,
-        avgLatencyMs: 35,
-        lastCheckedAt: Date.now(),
-        intervalSeconds: data.intervalSeconds || 60,
-        expectedStatus: data.expectedStatus || 200,
-        group: data.group || 'Edge Core API',
-        history: [],
-        slaBars: initialMonitors[0].slaBars,
-        edgeNodes: initialMonitors[0].edgeNodes,
-        notes: data.notes,
-      };
-      setMonitors((prev) => [newMon, ...prev]);
-
-      // Automatically include in status page
-      setStatusPageConfig((prev) => ({
-        ...prev,
-        monitorIds: [...prev.monitorIds, newMon.id],
-      }));
+  const handleSaveMonitor = (monitorData: Partial<Monitor>) => {
+    if (!handleRequireAuth('保存监控服务配置需要管理员密码授权')) {
+      return;
     }
 
+    if (editingMonitor) {
+      setMonitors((prev) =>
+        prev.map((m) =>
+          m.id === editingMonitor.id ? ({ ...m, ...monitorData } as Monitor) : m
+        )
+      );
+      if (selectedMonitor?.id === editingMonitor.id) {
+        setSelectedMonitor((prev) => (prev ? ({ ...prev, ...monitorData } as Monitor) : null));
+      }
+    } else {
+      const newMon: Monitor = {
+        id: `mon_${Date.now()}`,
+        name: monitorData.name || '新建服务监控',
+        url: monitorData.url || 'https://example.com',
+        type: monitorData.type || 'http',
+        status: 'operational',
+        uptime24h: 100,
+        uptime30d: 99.98,
+        avgLatencyMs: 45,
+        lastCheckedAt: Date.now(),
+        intervalSeconds: monitorData.intervalSeconds || 60,
+        history: [],
+        slaBars: [],
+        edgeNodes: [],
+        expectedStatus: monitorData.expectedStatus || 200,
+        method: monitorData.method || 'GET',
+        headers: monitorData.headers || {},
+        isPaused: false,
+        group: monitorData.group || '默认分组',
+      };
+      setMonitors((prev) => [newMon, ...prev]);
+    }
     setShowFormModal(false);
     setEditingMonitor(null);
   };
 
   const handleTogglePause = (monitorId: string) => {
+    if (!handleRequireAuth('更改监控运行或暂停状态需要管理员密码授权')) {
+      return;
+    }
     setMonitors((prev) =>
       prev.map((m) => {
         if (m.id === monitorId) {
@@ -289,6 +411,9 @@ export function AppContent() {
   };
 
   const handleDeleteMonitor = (monitorId: string) => {
+    if (!handleRequireAuth('删除监控服务需要管理员密码授权')) {
+      return;
+    }
     if (confirm('确认删除此 Uptime 监控项？')) {
       setMonitors((prev) => prev.filter((m) => m.id !== monitorId));
       if (selectedMonitor?.id === monitorId) {
@@ -299,6 +424,9 @@ export function AppContent() {
 
   // Incidents Actions
   const handleAddIncident = (newInc: Incident) => {
+    if (!handleRequireAuth('发布故障事件需要管理员密码授权')) {
+      return;
+    }
     setIncidents((prev) => [newInc, ...prev]);
   };
 
@@ -307,6 +435,9 @@ export function AppContent() {
     status: 'investigating' | 'identified' | 'monitoring' | 'resolved',
     message: string
   ) => {
+    if (!handleRequireAuth('更新事件状态需要管理员密码授权')) {
+      return;
+    }
     setIncidents((prev) =>
       prev.map((inc) => {
         if (inc.id === incidentId) {
@@ -329,41 +460,25 @@ export function AppContent() {
     );
   };
 
-  // Webhook Actions
-  const handleAddWebhook = (newWh: AlertWebhookConfig) => {
-    setWebhooks((prev) => [...prev, newWh]);
-  };
-
-  const handleToggleWebhook = (id: string) => {
-    setWebhooks((prev) =>
-      prev.map((w) => (w.id === id ? { ...w, enabled: !w.enabled } : w))
-    );
-  };
-
-  const handleDeleteWebhook = (id: string) => {
-    setWebhooks((prev) => prev.filter((w) => w.id !== id));
-  };
-
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors duration-200">
-      {/* Header with integrated navigation */}
+      {/* Header with integrated navigation (No API keys tab, no New Monitor button) */}
       <Header
         monitors={monitors}
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         onOpenAIReport={() => generateAISlaReport(null)}
-        onAddMonitor={() => {
-          setEditingMonitor(null);
-          setShowFormModal(true);
-        }}
         incidentsCount={incidents.filter((i) => i.status !== 'resolved').length}
+        onOpenAdmin={() => handleOpenAdminPage('auth')}
+        isAdminAuthenticated={isAdminAuthenticated}
+        hasAdminPassword={!!adminPassword}
       />
 
       {/* Main Content Area */}
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-6 min-w-0">
-        {/* MONITORS & OVERVIEW TAB */}
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-5 min-w-0">
+        {/* TAB 1: MONITORS & OVERVIEW (Includes New Monitor action button) */}
         {activeTab === 'monitors' && (
-          <div className="space-y-5">
+          <div className="space-y-4">
             <OverviewCards monitors={monitors} incidents={incidents} />
 
             <MonitorList
@@ -372,21 +487,45 @@ export function AppContent() {
               onRunCheckNow={(id) => executeLiveCheck(id, true)}
               onTogglePause={handleTogglePause}
               onEditMonitor={(m) => {
+                if (!handleRequireAuth('编辑监控服务配置需要管理员密码授权')) {
+                  return;
+                }
                 setEditingMonitor(m);
                 setShowFormModal(true);
               }}
-              onDeleteMonitor={handleDeleteMonitor}
+              onDeleteMonitor={(id) => {
+                if (!handleRequireAuth('删除监控服务需要管理员密码授权')) {
+                  return;
+                }
+                handleDeleteMonitor(id);
+              }}
               checkingMonitorId={checkingMonitorId}
+              isAdminAuthenticated={isAdminAuthenticated}
+              hasAdminPassword={!!adminPassword}
+              onRequestAuth={handleRequireAuth}
+              onAddMonitor={() => {
+                if (!handleRequireAuth('新建监控项需要管理员密码授权')) {
+                  return;
+                }
+                setEditingMonitor(null);
+                setShowFormModal(true);
+              }}
             />
           </div>
         )}
 
-        {/* CLOUDFLARE EDGE MAP TAB */}
+        {/* TAB 2: CLOUDFLARE EDGE MAP (Includes New Node button) */}
         {activeTab === 'edge_map' && (
-          <GlobalEdgeMap nodes={initialGlobalNodes} />
+          <GlobalEdgeMap
+            nodes={globalNodes}
+            isAdminAuthenticated={isAdminAuthenticated}
+            onRequestAuth={handleRequireAuth}
+            onUpdateNode={handleUpdateNode}
+            onAddNode={handleAddNode}
+          />
         )}
 
-        {/* INCIDENTS MANAGER TAB */}
+        {/* TAB 3: INCIDENTS MANAGER */}
         {activeTab === 'incidents' && (
           <IncidentsManager
             incidents={incidents}
@@ -395,27 +534,51 @@ export function AppContent() {
           />
         )}
 
-        {/* PUBLIC STATUS PAGE TAB */}
+        {/* TAB 4: PUBLIC STATUS PAGE */}
         {activeTab === 'status_page' && (
           <StatusPageBuilder
             config={statusPageConfig}
             monitors={monitors}
-            onUpdateConfig={(newCfg) =>
-              setStatusPageConfig((prev) => ({ ...prev, ...newCfg }))
-            }
+            onUpdateConfig={(newCfg) => {
+              if (!handleRequireAuth('更新公开状态页配置需要管理员密码授权')) {
+                return;
+              }
+              setStatusPageConfig((prev) => ({ ...prev, ...newCfg }));
+            }}
           />
         )}
 
-        {/* ALERTS & WEBHOOKS TAB */}
-        {activeTab === 'alerts' && (
-          <AlertSettings
+        {/* TAB 5: FULL-SCREEN RESPONSIVE ADMIN CONTROL CENTER */}
+        {activeTab === 'admin' && (
+          <AdminView
+            isAdminAuthenticated={isAdminAuthenticated}
+            onAuthenticate={handleAuthenticate}
+            onLogout={handleLogout}
+            hasAdminPassword={!!adminPassword}
+            onSetAdminPassword={handleSetAdminPassword}
+            monitors={monitors}
+            incidents={incidents}
+            globalNodes={globalNodes}
             webhooks={webhooks}
-            onAddWebhook={handleAddWebhook}
-            onToggleWebhook={handleToggleWebhook}
-            onDeleteWebhook={handleDeleteWebhook}
+            onImportData={handleImportData}
+            onResetData={handleResetData}
+            onBackToMonitoring={() => setActiveTab('monitors')}
+            initialTab={adminInitialTab}
           />
         )}
       </main>
+
+      {/* Quick Password Unlock Prompt Modal */}
+      <AuthPromptModal
+        isOpen={showAuthPrompt}
+        onClose={() => setShowAuthPrompt(false)}
+        onAuthenticate={handleAuthenticate}
+        onOpenFullAdmin={() => {
+          setShowAuthPrompt(false);
+          setActiveTab('admin');
+        }}
+        actionReason={authPromptReason}
+      />
 
       {/* Detail Modal */}
       {selectedMonitor && (

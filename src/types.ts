@@ -83,12 +83,48 @@ export interface Incident {
 
 export interface GlobalNode {
   code: string;
+  name?: string;
   city: string;
   country: string;
   flag: string;
   region: string;
   avgLatencyMs: number;
   status: 'operational' | 'degraded' | 'offline';
+  ip?: string;
+  maskedIp?: string;
+  provider?: string;
+  cpuUsage?: number;
+  memUsage?: number;
+  loadAvg?: string;
+  uptimeDays?: number;
+  probeVersion?: string;
+  lastSyncAt?: number;
+  probeSecret?: string;
+  probeType?: 'cloudflare_worker' | 'docker' | 'linux_systemd';
+}
+
+export interface CloudflareQuotaItem {
+  name: string;
+  used: number;
+  total: number;
+  unit: string;
+  period: 'daily' | 'monthly';
+  description: string;
+}
+
+export interface CloudflareQuotaInfo {
+  accountId: string;
+  accountName?: string;
+  lastCheckedAt?: number;
+  status: 'valid' | 'invalid' | 'unchecked';
+  quotas: {
+    workers: CloudflareQuotaItem;
+    kvReads: CloudflareQuotaItem;
+    kvWrites: CloudflareQuotaItem;
+    d1Reads: CloudflareQuotaItem;
+    d1Writes: CloudflareQuotaItem;
+    pagesBuilds: CloudflareQuotaItem;
+  };
 }
 
 export interface StatusPageConfig {
@@ -110,3 +146,20 @@ export interface AlertWebhookConfig {
   enabled: boolean;
   lastTriggeredAt?: number;
 }
+
+export interface ApiKeysConfig {
+  tgBotToken: string;
+  tgChatId: string;
+  geminiApiKey: string;
+  cfApiToken: string;
+  cfAccountId?: string;
+  customWebhookUrl?: string;
+}
+
+export interface DatabaseCleanupConfig {
+  enabled: boolean;
+  retentionDays: number;
+  lastCleanedAt?: number;
+  cleanedRowsCount?: number;
+}
+

@@ -12,6 +12,8 @@ import {
   AlertTriangle,
   XCircle,
   PauseCircle,
+  Plus,
+  Lock,
 } from 'lucide-react';
 
 interface MonitorListProps {
@@ -22,6 +24,10 @@ interface MonitorListProps {
   onEditMonitor: (monitor: Monitor) => void;
   onDeleteMonitor: (monitorId: string) => void;
   checkingMonitorId: string | null;
+  isAdminAuthenticated?: boolean;
+  hasAdminPassword?: boolean;
+  onRequestAuth?: (reason?: string) => void;
+  onAddMonitor?: () => void;
 }
 
 export const MonitorList: React.FC<MonitorListProps> = ({
@@ -32,6 +38,10 @@ export const MonitorList: React.FC<MonitorListProps> = ({
   onEditMonitor,
   onDeleteMonitor,
   checkingMonitorId,
+  isAdminAuthenticated = true,
+  hasAdminPassword = false,
+  onRequestAuth,
+  onAddMonitor,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | 'operational' | 'issues' | 'paused'>('all');
@@ -83,49 +93,86 @@ export const MonitorList: React.FC<MonitorListProps> = ({
     return '故障';
   };
 
+  const handleCreateClick = () => {
+    if (hasAdminPassword && !isAdminAuthenticated) {
+      onRequestAuth?.('新建监控项需要管理员密码授权');
+      return;
+    }
+    onAddMonitor?.();
+  };
+
   return (
     <div className="space-y-3">
-      {/* Clean Control Bar */}
+      {/* Clean Contextual Control Bar with New Monitor Action */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 py-1">
         {/* Search */}
         <div className="relative flex-1 max-w-sm">
           <Search className="absolute left-3 top-2.5 w-3.5 h-3.5 text-slate-400" />
           <input
             type="text"
-            placeholder="搜索站点名称或域名..."
+            placeholder="搜索监控站点名称或域名..."
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className="w-full pl-8 pr-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-emerald-500 transition-all"
+            className="w-full pl-8 pr-3 py-1.5 text-xs bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-xl text-slate-900 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-slate-400 transition-all"
           />
         </div>
 
-        {/* Status Filter Tabs */}
-        <div className="flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200/80 dark:border-slate-800 text-xs">
-          {[
-            { id: 'all', label: '全部' },
-            { id: 'operational', label: '正常' },
-            { id: 'issues', label: '异常' },
-            { id: 'paused', label: '暂停' },
-          ].map((tab) => (
+        {/* Filter Tabs & New Monitor Action Button */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1 bg-white dark:bg-slate-900 p-1 rounded-xl border border-slate-200/80 dark:border-slate-800 text-xs">
+            {[
+              { id: 'all', label: '全部' },
+              { id: 'operational', label: '正常' },
+              { id: 'issues', label: '异常' },
+              { id: 'paused', label: '暂停' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setStatusFilter(tab.id as any)}
+                className={`px-3 py-1 rounded-lg transition-colors font-medium cursor-pointer ${
+                  statusFilter === tab.id
+                    ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white font-semibold'
+                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* New Monitor Button placed directly inside Service Monitor View */}
+          {onAddMonitor && (
             <button
-              key={tab.id}
-              onClick={() => setStatusFilter(tab.id as any)}
-              className={`px-3 py-1 rounded-lg transition-colors font-medium ${
-                statusFilter === tab.id
-                  ? 'bg-slate-100 dark:bg-slate-800 text-slate-900 dark:text-white font-semibold'
-                  : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
-              }`}
+              onClick={handleCreateClick}
+              className="h-8 flex items-center gap-1.5 px-3 rounded-xl bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 font-medium text-xs shadow-xs transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+              title={hasAdminPassword && !isAdminAuthenticated ? '需管理员密码授权新建监控' : '新建监控项'}
             >
-              {tab.label}
+              {hasAdminPassword && !isAdminAuthenticated ? (
+                <Lock className="w-3.5 h-3.5" />
+              ) : (
+                <Plus className="w-3.5 h-3.5" />
+              )}
+              <span>新建监控</span>
             </button>
-          ))}
+          )}
         </div>
       </div>
 
       {/* Monitor Rows */}
       {filteredMonitors.length === 0 ? (
-        <div className="p-8 text-center bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl">
-          <p className="text-xs text-slate-500">未找到匹配的监控项</p>
+        <div className="p-8 text-center bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl space-y-3">
+          <p className="text-xs text-slate-500">
+            {searchTerm ? '未找到匹配的监控项' : '当前暂无监控项，点击下方按钮添加'}
+          </p>
+          {onAddMonitor && !searchTerm && (
+            <button
+              onClick={handleCreateClick}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 dark:bg-white dark:hover:bg-slate-100 text-white dark:text-slate-900 text-xs font-medium rounded-xl transition-colors cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>新建监控项</span>
+            </button>
+          )}
         </div>
       ) : (
         <div className="bg-white dark:bg-slate-900 border border-slate-200/70 dark:border-slate-800 rounded-2xl overflow-hidden divide-y divide-slate-100 dark:divide-slate-800/80 shadow-xs">
@@ -229,27 +276,45 @@ export const MonitorList: React.FC<MonitorListProps> = ({
 
                     {/* Pause / Resume */}
                     <button
-                      onClick={() => onTogglePause(m.id)}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                      title={m.isPaused ? '恢复检测' : '暂停检测'}
+                      onClick={() => {
+                        if (hasAdminPassword && !isAdminAuthenticated) {
+                          onRequestAuth?.('更改监控运行或暂停状态需管理密码授权');
+                          return;
+                        }
+                        onTogglePause(m.id);
+                      }}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                      title={hasAdminPassword && !isAdminAuthenticated ? '需管理密码授权' : m.isPaused ? '恢复检测' : '暂停检测'}
                     >
                       {m.isPaused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
                     </button>
 
                     {/* Edit */}
                     <button
-                      onClick={() => onEditMonitor(m)}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
-                      title="编辑配置"
+                      onClick={() => {
+                        if (hasAdminPassword && !isAdminAuthenticated) {
+                          onRequestAuth?.('编辑监控服务配置需管理密码授权');
+                          return;
+                        }
+                        onEditMonitor(m);
+                      }}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer"
+                      title={hasAdminPassword && !isAdminAuthenticated ? '需管理密码授权' : '编辑配置'}
                     >
                       <Edit2 className="w-3.5 h-3.5" />
                     </button>
 
                     {/* Delete */}
                     <button
-                      onClick={() => onDeleteMonitor(m.id)}
-                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors"
-                      title="删除监控"
+                      onClick={() => {
+                        if (hasAdminPassword && !isAdminAuthenticated) {
+                          onRequestAuth?.('删除监控服务需管理密码授权');
+                          return;
+                        }
+                        onDeleteMonitor(m.id);
+                      }}
+                      className="p-1.5 rounded-lg text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors cursor-pointer"
+                      title={hasAdminPassword && !isAdminAuthenticated ? '需管理密码授权' : '删除监控'}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
